@@ -1,10 +1,11 @@
 { pkgs ? import <nixpkgs> {} }:
 
 pkgs.mkShell {
-  buildInputs = [
-    pkgs.cargo
-    pkgs.openssl
-    pkgs.pkg-config
-    pkgs.websocat
+  buildInputs = with pkgs; [
+    cargo
+    rustfmt
+    openssl
+    pkg-config
+    websocat
   ];
 }
