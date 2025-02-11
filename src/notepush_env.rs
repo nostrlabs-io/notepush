@@ -1,4 +1,3 @@
-use a2;
 use dotenv::dotenv;
 use std::env;
 
@@ -53,7 +52,7 @@ impl NotePushEnv {
         let nostr_event_cache_max_age = env::var("NOSTR_EVENT_CACHE_MAX_AGE")
             .unwrap_or(DEFAULT_NOSTR_EVENT_CACHE_MAX_AGE.to_string())
             .parse::<u64>()
-            .map(|s| std::time::Duration::from_secs(s))
+            .map(std::time::Duration::from_secs)
             .unwrap_or(std::time::Duration::from_secs(
                 DEFAULT_NOSTR_EVENT_CACHE_MAX_AGE,
             ));

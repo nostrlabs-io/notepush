@@ -1,6 +1,6 @@
 use super::nostr_event_cache::Cache;
 use super::nostr_event_extensions::{RelayList, TimestampedMuteList};
-use super::notification_manager::EventSaver;
+use super::EventSaver;
 use super::ExtendedEvent;
 use nostr_sdk::prelude::*;
 use tokio::sync::Mutex;
@@ -22,7 +22,7 @@ impl NostrNetworkHelper {
         cache_max_age: Duration,
         event_saver: EventSaver,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let client = Client::new(&Keys::generate());
+        let client = Client::new(Keys::generate());
         client.add_relay(relay_url.clone()).await?;
         client.connect().await;
         Ok(NostrNetworkHelper {
@@ -133,7 +133,7 @@ impl NostrNetworkHelper {
     }
 
     async fn make_client_for(&self, author: &PublicKey) -> Option<Client> {
-        let client = Client::new(&Keys::generate());
+        let client = Client::new(Keys::generate());
 
         let relay_list = self.get_relay_list(author).await?;
         for (url, metadata) in relay_list {
@@ -157,7 +157,7 @@ impl NostrNetworkHelper {
     ) -> Option<Event> {
         let subscription_filter = Filter::new()
             .kinds(vec![kind])
-            .authors(vec![author.clone()])
+            .authors(vec![*author])
             .limit(1);
 
         let mut notifications = client.notifications();
@@ -168,17 +168,15 @@ impl NostrNetworkHelper {
         let mut event: Option<Event> = None;
 
         while let Ok(result) = timeout(NOTE_FETCH_TIMEOUT, notifications.recv()).await {
-            if let Ok(notification) = result {
-                if let RelayPoolNotification::Event {
-                    subscription_id,
-                    event: event_option,
-                    ..
-                } = notification
-                {
-                    if this_subscription_id == subscription_id && event_option.kind == kind {
-                        event = Some((*event_option).clone());
-                        break;
-                    }
+            if let Ok(RelayPoolNotification::Event {
+                subscription_id,
+                event: event_option,
+                ..
+            }) = result
+            {
+                if this_subscription_id == subscription_id && event_option.kind == kind {
+                    event = Some((*event_option).clone());
+                    break;
                 }
             }
         }

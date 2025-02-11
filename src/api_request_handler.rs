@@ -1,20 +1,17 @@
 use crate::nip98_auth;
-use crate::notification_manager::notification_manager::UserNotificationSettings;
+use crate::notification_manager::UserNotificationSettings;
 use crate::relay_connection::RelayConnection;
 use http_body_util::Full;
 use hyper::body::Buf;
 use hyper::body::Bytes;
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
-use hyper_tungstenite;
 
 use http_body_util::BodyExt;
-use nostr;
 use serde_json::from_value;
 
 use crate::notification_manager::NotificationManager;
 use hyper::Method;
-use log;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -85,13 +82,13 @@ impl APIHandler {
             }
         };
 
-        Ok(Response::builder()
+        Response::builder()
             .header("Content-Type", "application/json")
             .header("Access-Control-Allow-Origin", "*")
             .status(final_api_response.status)
             .body(http_body_util::Full::new(Bytes::from(
                 final_api_response.body.to_string(),
-            )))?)
+            )))
     }
 
     async fn handle_websocket_upgrade(
@@ -144,7 +141,7 @@ impl APIHandler {
         };
 
         // 2. NIP-98 authentication
-        let authorized_pubkey = match self.authenticate(&req, body_bytes).await? {
+        let authorized_pubkey = match self.authenticate(req, body_bytes).await? {
             Ok(pubkey) => pubkey,
             Err(auth_error) => {
                 return Err(Box::new(APIError::AuthenticationError(auth_error)));
@@ -169,7 +166,7 @@ impl APIHandler {
         if let Some(url_params) = route_match(
             &Method::PUT,
             "/user-info/:pubkey/:deviceToken",
-            &parsed_request,
+            parsed_request,
         ) {
             return self.handle_user_info(parsed_request, &url_params).await;
         }
@@ -177,7 +174,7 @@ impl APIHandler {
         if let Some(url_params) = route_match(
             &Method::DELETE,
             "/user-info/:pubkey/:deviceToken",
-            &parsed_request,
+            parsed_request,
         ) {
             return self
                 .handle_user_info_remove(parsed_request, &url_params)
@@ -187,7 +184,7 @@ impl APIHandler {
         if let Some(url_params) = route_match(
             &Method::GET,
             "/user-info/:pubkey/:deviceToken/preferences",
-            &parsed_request,
+            parsed_request,
         ) {
             return self.get_user_settings(parsed_request, &url_params).await;
         }
@@ -195,7 +192,7 @@ impl APIHandler {
         if let Some(url_params) = route_match(
             &Method::PUT,
             "/user-info/:pubkey/:deviceToken/preferences",
-            &parsed_request,
+            parsed_request,
         ) {
             return self.set_user_settings(parsed_request, &url_params).await;
         }
@@ -408,10 +405,11 @@ impl APIHandler {
                 settings,
             )
             .await?;
-        return Ok(APIResponse {
+
+        Ok(APIResponse {
             status: StatusCode::OK,
             body: json!({ "message": "User settings saved successfully" }),
-        });
+        })
     }
 
     async fn get_user_settings(
@@ -536,8 +534,7 @@ fn route_match<'a>(
     }
 
     for (i, segment) in path_segments.iter().enumerate() {
-        if segment.starts_with(':') {
-            let key = &segment[1..];
+        if let Some(key) = segment.strip_prefix(':') {
             let value = req_segments[i].to_string();
             params.insert(key, value);
         } else if segment != &req_segments[i] {

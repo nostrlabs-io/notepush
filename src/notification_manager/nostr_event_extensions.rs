@@ -35,7 +35,7 @@ impl ExtendedEvent for nostr::Event {
     /// Retrieves a set of pubkeys relevant to the note
     fn relevant_pubkeys(&self) -> std::collections::HashSet<nostr::PublicKey> {
         let mut pubkeys = self.referenced_pubkeys();
-        pubkeys.insert(self.pubkey.clone());
+        pubkeys.insert(self.pubkey);
         pubkeys
     }
 
@@ -110,21 +110,9 @@ impl MaybeConvertibleToMuteList for nostr::Event {
             return None;
         }
         Some(MuteList {
-            public_keys: self
-                .referenced_pubkeys()
-                .iter()
-                .map(|pk| pk.clone())
-                .collect(),
-            hashtags: self
-                .referenced_hashtags()
-                .iter()
-                .map(|tag| tag.clone())
-                .collect(),
-            event_ids: self
-                .referenced_event_ids()
-                .iter()
-                .map(|id| id.clone())
-                .collect(),
+            public_keys: self.referenced_pubkeys().iter().copied().collect(),
+            hashtags: self.referenced_hashtags().iter().cloned().collect(),
+            event_ids: self.referenced_event_ids().iter().copied().collect(),
             words: self
                 .get_tags_content(TagKind::Word)
                 .iter()
@@ -142,7 +130,7 @@ impl MaybeConvertibleToTimestampedMuteList for nostr::Event {
         let mute_list = self.to_mute_list()?;
         Some(TimestampedMuteList {
             mute_list,
-            timestamp: self.created_at.clone(),
+            timestamp: self.created_at,
         })
     }
 }
@@ -158,11 +146,11 @@ impl MaybeConvertibleToRelayList for nostr::Event {
         if self.kind != Kind::RelayList {
             return None;
         }
-        let extracted_relay_list = nip65::extract_relay_list(&self);
+        let extracted_relay_list = nip65::extract_relay_list(self);
         // Convert the extracted relay list data fully into owned data that can be returned
         let extracted_relay_list_owned = extracted_relay_list
             .into_iter()
-            .map(|(url, metadata)| (url.clone(), metadata.as_ref().map(|m| m.clone())))
+            .map(|(url, metadata)| (url.clone(), metadata.clone()))
             .collect();
 
         Some(extracted_relay_list_owned)

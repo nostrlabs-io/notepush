@@ -1,6 +1,5 @@
 use super::utils::time_delta::TimeDelta;
 use base64::prelude::*;
-use nostr;
 use nostr::bitcoin::hashes::sha256::Hash as Sha256Hash;
 use nostr::bitcoin::hashes::Hash;
 use nostr::util::hex;
@@ -33,14 +32,14 @@ pub async fn nip98_verify_auth_header(
     let decoded_note_json = BASE64_STANDARD
         .decode(base64_encoded_note.as_bytes())
         .map_err(|_| {
-            format!("Failed to decode base64 encoded note from Nostr authorization header")
+            "Failed to decode base64 encoded note from Nostr authorization header".to_string()
         })?;
 
     let note_value: Value = serde_json::from_slice(&decoded_note_json)
-        .map_err(|_| format!("Could not parse JSON note from authorization header"))?;
+        .map_err(|_| "Could not parse JSON note from authorization header".to_string())?;
 
     let note: nostr::Event = nostr::Event::from_value(note_value)
-        .map_err(|_| format!("Could not parse Nostr note from JSON"))?;
+        .map_err(|_| "Could not parse Nostr note from JSON".to_string())?;
 
     if note.kind != nostr::Kind::HttpAuth {
         return Err("Nostr note kind in authorization header is incorrect".to_string());
@@ -81,12 +80,12 @@ pub async fn nip98_verify_auth_header(
                 .ok_or("Missing 'payload' tag from Nostr authorization header")?,
         )
         .map_err(|_| {
-            format!("Failed to decode hex encoded payload from Nostr authorization header")
+            "Failed to decode hex encoded payload from Nostr authorization header".to_string()
         })?;
 
         let authorized_content_hash: Sha256Hash =
             Sha256Hash::from_slice(&authorized_content_hash_bytes)
-                .map_err(|_| format!("Failed to convert hex encoded payload to Sha256Hash"))?;
+                .map_err(|_| "Failed to convert hex encoded payload to Sha256Hash".to_string())?;
 
         let body_hash = Sha256Hash::hash(body_data);
         if authorized_content_hash != body_hash {

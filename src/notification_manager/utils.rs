@@ -9,7 +9,7 @@ pub fn should_mute_notification_for_mutelist(event: &Event, mute_list: &MuteList
         }
     }
     for muted_event_id in &mute_list.event_ids {
-        if event.id == *muted_event_id || event.referenced_event_ids().contains(&muted_event_id) {
+        if event.id == *muted_event_id || event.referenced_event_ids().contains(muted_event_id) {
             return true;
         }
     }

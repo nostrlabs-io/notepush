@@ -1,6 +1,5 @@
 use super::nostr_event_extensions::{MaybeConvertibleToRelayList, RelayList, TimestampedMuteList};
 use crate::notification_manager::nostr_event_extensions::MaybeConvertibleToTimestampedMuteList;
-use log;
 use nostr_sdk::prelude::*;
 use std::collections::HashMap;
 use tokio::time::{Duration, Instant};
@@ -92,8 +91,8 @@ impl Cache {
 
     // MARK: - Adding items to the cache
 
-    pub fn add_optional_mute_list_with_author<'a>(
-        &'a mut self,
+    pub fn add_optional_mute_list_with_author(
+        &mut self,
         author: &PublicKey,
         mute_list: Option<&Event>,
     ) {
@@ -105,8 +104,8 @@ impl Cache {
         }
     }
 
-    pub fn add_optional_relay_list_with_author<'a>(
-        &'a mut self,
+    pub fn add_optional_relay_list_with_author(
+        &mut self,
         author: &PublicKey,
         relay_list_event: Option<&Event>,
     ) {
@@ -118,8 +117,8 @@ impl Cache {
         }
     }
 
-    pub fn add_optional_contact_list_with_author<'a>(
-        &'a mut self,
+    pub fn add_optional_contact_list_with_author(
+        &mut self,
         author: &PublicKey,
         contact_list: Option<&Event>,
     ) {
@@ -135,7 +134,7 @@ impl Cache {
         match event.kind {
             Kind::MuteList => {
                 self.mute_lists.insert(
-                    event.pubkey.clone(),
+                    event.pubkey,
                     CacheEntry::maybe(event.to_timestamped_mute_list()),
                 );
                 log::debug!(
@@ -149,17 +148,15 @@ impl Cache {
                     event.id.to_hex()
                 );
                 self.contact_lists
-                    .insert(event.pubkey.clone(), CacheEntry::new(event.to_owned()));
+                    .insert(event.pubkey, CacheEntry::new(event.to_owned()));
             }
             Kind::RelayList => {
                 log::debug!(
                     "Added relay list to the cache. Event ID: {}",
                     event.id.to_hex()
                 );
-                self.relay_lists.insert(
-                    event.pubkey.clone(),
-                    CacheEntry::maybe(event.to_relay_list()),
-                );
+                self.relay_lists
+                    .insert(event.pubkey, CacheEntry::maybe(event.to_relay_list()));
             }
             _ => {
                 log::debug!(

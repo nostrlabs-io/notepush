@@ -4,7 +4,6 @@ use futures::StreamExt;
 use hyper::upgrade::Upgraded;
 use hyper_tungstenite::{HyperWebsocket, WebSocketStream};
 use hyper_util::rt::TokioIo;
-use log;
 use nostr::util::JsonUtil;
 use nostr::{ClientMessage, RelayMessage};
 use serde_json::Value;
@@ -36,7 +35,7 @@ impl RelayConnection {
         notification_manager: Arc<NotificationManager>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut connection = RelayConnection::new(notification_manager).await?;
-        Ok(connection.run_loop(websocket).await?)
+        connection.run_loop(websocket).await
     }
 
     // MARK: - Connection Runtime management
@@ -111,7 +110,7 @@ impl RelayConnection {
                 self.notification_manager
                     .send_notifications_if_needed(&event)
                     .await?;
-                let notice_message = format!("blocked: This relay does not store events");
+                let notice_message = "blocked: This relay does not store events".to_string();
                 let response = RelayMessage::Ok {
                     event_id: event.id,
                     status: false,
@@ -122,7 +121,7 @@ impl RelayConnection {
             _ => {
                 log::info!("Received unsupported Nostr client message");
                 log::debug!("Unsupported Nostr client message: {:?}", message);
-                let notice_message = format!("Unsupported message.");
+                let notice_message = "Unsupported message.".to_string();
                 let response = RelayMessage::Notice {
                     message: notice_message,
                 };
