@@ -1,6 +1,5 @@
 use a2::{Client, ClientConfig, DefaultNotificationBuilder, NotificationBuilder};
 use log;
-use nostr::event::EventId;
 use nostr::key::PublicKey;
 use nostr::nips::nip51::MuteList;
 use nostr::types::Timestamp;
@@ -374,7 +373,7 @@ impl NotificationManager {
         event: &Event,
     ) -> Result<HashSet<nostr::PublicKey>, Box<dyn std::error::Error>> {
         let notification_status = self.get_notification_status(event).await?;
-        let relevant_pubkeys = self.pubkeys_relevant_to_event(event).await?;
+        let relevant_pubkeys = self.pubkeys_relevant_to_event(event);
         let mut relevant_pubkeys_that_are_registered = HashSet::new();
         for pubkey in relevant_pubkeys {
             if self.is_pubkey_registered(&pubkey).await? {
@@ -449,34 +448,8 @@ impl NotificationManager {
         )
     }
 
-    async fn pubkeys_relevant_to_event(
-        &self,
-        event: &Event,
-    ) -> Result<HashSet<PublicKey>, Box<dyn std::error::Error>> {
-        let mut relevant_pubkeys = event.relevant_pubkeys();
-        let referenced_event_ids = event.referenced_event_ids();
-        for referenced_event_id in referenced_event_ids {
-            let pubkeys_relevant_to_referenced_event = self
-                .pubkeys_subscribed_to_event_id(&referenced_event_id)
-                .await?;
-            relevant_pubkeys.extend(pubkeys_relevant_to_referenced_event);
-        }
-        Ok(relevant_pubkeys)
-    }
-
-    async fn pubkeys_subscribed_to_event_id(
-        &self,
-        event_id: &EventId,
-    ) -> Result<HashSet<PublicKey>, Box<dyn std::error::Error>> {
-        let db_mutex_guard = self.db.lock().await;
-        let connection = db_mutex_guard.get()?;
-        let mut stmt = connection.prepare("SELECT pubkey FROM notifications WHERE event_id = ?")?;
-        let pubkeys = stmt
-            .query_map([event_id.to_sql_string()], |row| row.get(0))?
-            .filter_map(|r| r.ok())
-            .filter_map(|r: String| PublicKey::from_sql_string(r).ok())
-            .collect();
-        Ok(pubkeys)
+    fn pubkeys_relevant_to_event(&self, event: &Event) -> HashSet<PublicKey> {
+        event.relevant_pubkeys()
     }
 
     async fn send_event_notifications_to_pubkey(

@@ -1,12 +1,8 @@
 use super::nostr_event_extensions::{MaybeConvertibleToRelayList, RelayList, TimestampedMuteList};
-use crate::{
-    notification_manager::nostr_event_extensions::MaybeConvertibleToTimestampedMuteList,
-    utils::time_delta::TimeDelta,
-};
+use crate::notification_manager::nostr_event_extensions::MaybeConvertibleToTimestampedMuteList;
 use log;
 use nostr_sdk::prelude::*;
 use std::collections::HashMap;
-use std::str::FromStr;
 use tokio::time::{Duration, Instant};
 
 struct CacheEntry<T> {
@@ -202,7 +198,7 @@ pub enum CacheError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nostr_sdk::prelude::*;
+    use std::str::FromStr;
     use std::time::Duration;
     use tokio::time::sleep;
 
