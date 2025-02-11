@@ -2,8 +2,7 @@
 
 pkgs.mkShell {
   buildInputs = with pkgs; [
-    cargo
-    rustfmt
+    rustup
     openssl
     pkg-config
     websocat
