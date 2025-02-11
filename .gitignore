@@ -1,4 +1,6 @@
 target/
+build.log
+rusty-tags.vi
 .direnv/
 .buildcmd
 .build-result
