@@ -252,3 +252,33 @@ pub struct TimestampedMuteList {
     pub mute_list: MuteList,
     pub timestamp: nostr::Timestamp,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nostr::{Event, PublicKey};
+
+    #[test]
+    fn test_relevant_pubkeys() {
+        // Define the event data based on the provided JSON
+        let event_data = r#"{"kind":9735,"tags":[["p","4d4fb5ff0afb8c04e6c6e03f51281b664576f985e5bc34a3a7ee310a1e821f47"],["e","7ef9165e1d68424b5e34134ecaa47411863f736f55a0c08f3a00db517fa15507"],["bolt11","lnbc19710n1pnwg0kdpp57003xutqz8pp9yhjwju243gdgelskndj2prt7gfhkdvmskp24r8qhp5ulu3sphjfgt8tdasqsptaz5xuxcvtmq7fhzdnmk5y3rpzwv6huwqcqzzsxqrrs0sp549znyngm55n9gpsexy0d92zvcqasqe5d0k7rdg4s66u2sez7fdhq9qyyssqpwd7ar8yez6k2yymn07z3ejkfxjzw4rld80jgq740hsszwk5m4nnh2hvx74nqs5cvwysafjlu5uu6p9t9heuqk6tdjkz3fpmj32raxsppy7ync"],["description","{\"id\":\"cdf701cd336d74ae2a234b9b3490a8e641575f1995b1a874dc32a42666454d11\",\"pubkey\":\"32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245\",\"created_at\":1726234316,\"kind\":9734,\"tags\":[[\"e\",\"7ef9165e1d68424b5e34134ecaa47411863f736f55a0c08f3a00db517fa15507\"],[\"p\",\"4d4fb5ff0afb8c04e6c6e03f51281b664576f985e5bc34a3a7ee310a1e821f47\"],[\"relays\",\"wss:\/\/nos.lol\",\"wss:\/\/theforest.nostr1.com\",\"wss:\/\/relay.damus.io\",\"wss:\/\/nostr.wine\",\"ws:\/\/monad.jb55.com:8080\",\"wss:\/\/relay.mostr.pub\"]],\"content\":\"\",\"sig\":\"859afb22644588574fa7002dac79a9fb6a4eb2715d494614578854420b9c3e6f7a3034baf2f6bc99b2baecbfcf22dad32cfd44dfa5b42ddd0e0c6198635aa0c1\"}"],["P","32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245"]],"created_at":1726234322,"content":"","sig":"3c9bb7553278e444addc591ee3565657a8b783d47a4438cadbed6ed1ae448d470e4d2471acd21a7ab26d7a2af8c102538f00e21bdcaabf213a5fceed2895e27a","id":"6901102ac61ecfb3a051acdd2103f0b4ea7cbe4dcc58bee47ce7d8b621cd5a7b","pubkey":"f81611363554b64306467234d7396ec88455707633f54738f6c4683535098cd3"}"#;
+
+        // Parse the event from JSON
+        let event: Event =
+            serde_json::from_str(event_data).expect("Event data should be valid JSON");
+
+        // Obtain relevant pubkeys
+        let relevant_pubkeys = event.relevant_pubkeys();
+
+        // Expected pubkey
+        let expected_pubkey =
+            PublicKey::from_hex("4d4fb5ff0afb8c04e6c6e03f51281b664576f985e5bc34a3a7ee310a1e821f47")
+                .expect("Should be valid hex");
+        let unexpected_pubkey =
+            PublicKey::from_hex("32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245")
+                .expect("Should be valid hex");
+
+        assert!(!relevant_pubkeys.contains(&unexpected_pubkey));
+        assert!(relevant_pubkeys.contains(&expected_pubkey));
+    }
+}
