@@ -28,20 +28,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         r2d2::Pool::new(manager).expect("Failed to create SQLite connection pool");
     // Notification manager is a shared resource that will be used by all connections via a mutex and an atomic reference counter.
     // This is shared to avoid data races when reading/writing to the sqlite database, and reduce outgoing relay connections.
-    let notification_manager = Arc::new(
-        notification_manager::NotificationManager::new(
-            pool,
-            env.relay_url.clone(),
-            env.apns_private_key_path.clone(),
-            env.apns_private_key_id.clone(),
-            env.apns_team_id.clone(),
-            env.apns_environment.clone(),
-            env.apns_topic.clone(),
-            env.nostr_event_cache_max_age,
-        )
-        .await
-        .expect("Failed to create notification manager"),
-    );
+    let mut notification_manager = notification_manager::NotificationManager::new(
+        pool,
+        env.relay_url.clone(),
+        env.nostr_event_cache_max_age,
+    )
+    .await
+    .expect("Failed to create notification manager");
+
+    // setup apns if key path is set
+    if let Some(apns_key) = &env.apns_private_key_path {
+        notification_manager = notification_manager
+            .with_apns(
+                apns_key.clone(),
+                env.apns_private_key_id.unwrap().clone(),
+                env.apns_team_id.unwrap().clone(),
+                env.apns_environment.clone(),
+                env.apns_topic.unwrap().clone(),
+            )
+            .expect("Failed to set APNs");
+        log::info!("APNS configured for notifications manager!");
+    }
+
+    // setup fcm if google services path is set
+    if let Some(gsp) = &env.google_services_file_path {
+        notification_manager = notification_manager
+            .with_fcm(gsp)
+            .expect("Failed to setup FCM");
+        log::info!("FCM configured for notifications manager!");
+    }
+
+    let notification_manager = Arc::new(notification_manager);
     let api_handler = Arc::new(api_request_handler::APIHandler::new(
         notification_manager.clone(),
         env.api_base_url.clone(),

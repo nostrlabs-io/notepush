@@ -9,15 +9,15 @@ const DEFAULT_NOSTR_EVENT_CACHE_MAX_AGE: u64 = 60 * 60; // 1 hour
 
 pub struct NotePushEnv {
     // The path to the Apple private key .p8 file
-    pub apns_private_key_path: String,
+    pub apns_private_key_path: Option<String>,
     // The Apple private key ID
-    pub apns_private_key_id: String,
+    pub apns_private_key_id: Option<String>,
     // The Apple team ID
-    pub apns_team_id: String,
+    pub apns_team_id: Option<String>,
     // The APNS environment to send notifications to (Sandbox or Production)
     pub apns_environment: a2::client::Endpoint,
     // The topic to send notifications to (The Apple app bundle ID)
-    pub apns_topic: String,
+    pub apns_topic: Option<String>,
     // The path to the SQLite database file
     pub db_path: String,
     // The host and port to bind the relay and API to
@@ -28,14 +28,18 @@ pub struct NotePushEnv {
     pub relay_url: String,
     // The max age of the Nostr event cache, in seconds
     pub nostr_event_cache_max_age: std::time::Duration,
+    // Path to google_services.json for FCM
+    pub google_services_file_path: Option<String>,
+    // VAAPI key for WebPush (via FCM)
+    pub vaapi_key: Option<String>,
 }
 
 impl NotePushEnv {
     pub fn load_env() -> Result<NotePushEnv, env::VarError> {
         dotenv().ok();
-        let apns_private_key_path = env::var("APNS_AUTH_PRIVATE_KEY_FILE_PATH")?;
-        let apns_private_key_id = env::var("APNS_AUTH_PRIVATE_KEY_ID")?;
-        let apns_team_id = env::var("APPLE_TEAM_ID")?;
+        let apns_private_key_path = env::var("APNS_AUTH_PRIVATE_KEY_FILE_PATH").ok();
+        let apns_private_key_id = env::var("APNS_AUTH_PRIVATE_KEY_ID").ok();
+        let apns_team_id = env::var("APPLE_TEAM_ID").ok();
         let db_path = env::var("DB_PATH").unwrap_or(DEFAULT_DB_PATH.to_string());
         let host = env::var("HOST").unwrap_or(DEFAULT_HOST.to_string());
         let port = env::var("PORT").unwrap_or(DEFAULT_PORT.to_string());
@@ -48,7 +52,7 @@ impl NotePushEnv {
             "production" => a2::client::Endpoint::Production,
             _ => a2::client::Endpoint::Sandbox,
         };
-        let apns_topic = env::var("APNS_TOPIC")?;
+        let apns_topic = env::var("APNS_TOPIC").ok();
         let nostr_event_cache_max_age = env::var("NOSTR_EVENT_CACHE_MAX_AGE")
             .unwrap_or(DEFAULT_NOSTR_EVENT_CACHE_MAX_AGE.to_string())
             .parse::<u64>()
@@ -56,6 +60,8 @@ impl NotePushEnv {
             .unwrap_or(std::time::Duration::from_secs(
                 DEFAULT_NOSTR_EVENT_CACHE_MAX_AGE,
             ));
+        let google_services_file_path = env::var("GOOGLE_SERVICES_FILE_PATH").ok();
+        let vaapi_key = env::var("VAAPI_KEY").ok();
 
         Ok(NotePushEnv {
             apns_private_key_path,
@@ -69,6 +75,8 @@ impl NotePushEnv {
             api_base_url,
             relay_url,
             nostr_event_cache_max_age,
+            google_services_file_path,
+            vaapi_key,
         })
     }
 

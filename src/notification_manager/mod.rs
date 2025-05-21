@@ -3,8 +3,8 @@ mod nostr_event_extensions;
 pub mod nostr_network_helper;
 pub mod utils;
 
-use std::cmp::{max, min};
 use nostr_event_extensions::{ExtendedEvent, SqlStringConvertible};
+use std::cmp::{max, min};
 
 use a2::{Client, ClientConfig, DefaultNotificationBuilder, NotificationBuilder};
 use nostr::key::PublicKey;
@@ -19,6 +19,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use fcm_service::{FcmMessage, FcmNotification, FcmService, Target};
 use nostr::Event;
 use nostr_event_extensions::Codable;
 use nostr_event_extensions::MaybeConvertibleToMuteList;
@@ -26,6 +27,8 @@ use nostr_event_extensions::TimestampedMuteList;
 use nostr_network_helper::NostrNetworkHelper;
 use r2d2_sqlite::SqliteConnectionManager;
 use std::fs::File;
+use std::str::FromStr;
+use thiserror::Error;
 use utils::should_mute_notification_for_mutelist;
 
 // MARK: - NotificationManager
@@ -37,10 +40,56 @@ const HELLTHREAD_MIN_PUBKEYS: i8 = 6;
 // Maximum threshold the hellthread pubkey tag count setting can go up to.
 const HELLTHREAD_MAX_PUBKEYS: i8 = 24;
 
+#[derive(Debug, Clone, Copy)]
+pub enum NotificationBackend {
+    APNS,
+    FCM,
+}
+
+impl From<u8> for NotificationBackend {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => NotificationBackend::APNS,
+            1 => NotificationBackend::FCM,
+            _ => panic!("Invalid value for NotificationBackend"),
+        }
+    }
+}
+
+impl Into<u8> for NotificationBackend {
+    fn into(self) -> u8 {
+        match self {
+            NotificationBackend::APNS => 0,
+            NotificationBackend::FCM => 1,
+        }
+    }
+}
+
+impl FromStr for NotificationBackend {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "fcm" => Ok(NotificationBackend::FCM),
+            "apns" => Ok(NotificationBackend::APNS),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum NotificationManagerError {
+    #[error("APNS is not configured")]
+    APNSMissing,
+    #[error("FCM is not configured")]
+    FCMMissing,
+}
+
 pub struct NotificationManager {
     db: Arc<Mutex<r2d2::Pool<SqliteConnectionManager>>>,
-    apns_topic: String,
-    apns_client: Mutex<Client>,
+    apns_topic: Option<String>,
+    apns_client: Option<Mutex<Client>>,
+    fcm_client: Option<Mutex<FcmService>>,
     nostr_network_helper: NostrNetworkHelper,
     pub event_saver: EventSaver,
 }
@@ -151,32 +200,19 @@ impl NotificationManager {
     pub async fn new(
         db: r2d2::Pool<SqliteConnectionManager>,
         relay_url: String,
-        apns_private_key_path: String,
-        apns_private_key_id: String,
-        apns_team_id: String,
-        apns_environment: a2::client::Endpoint,
-        apns_topic: String,
         cache_max_age: std::time::Duration,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let connection = db.get()?;
         Self::setup_database(&connection)?;
-
-        let mut file = File::open(&apns_private_key_path)?;
-
-        let client = Client::token(
-            &mut file,
-            &apns_private_key_id,
-            &apns_team_id,
-            ClientConfig::new(apns_environment.clone()),
-        )?;
 
         let db = Arc::new(Mutex::new(db));
         let event_saver = EventSaver::new(db.clone());
 
         let manager = NotificationManager {
             db,
-            apns_topic,
-            apns_client: Mutex::new(client),
+            apns_topic: None,
+            apns_client: None,
+            fcm_client: None,
             nostr_network_helper: NostrNetworkHelper::new(
                 relay_url.clone(),
                 cache_max_age,
@@ -189,6 +225,46 @@ impl NotificationManager {
         Ok(manager)
     }
 
+    /// Adds APNS configuration
+    pub fn with_apns(
+        mut self,
+        apns_private_key_path: String,
+        apns_private_key_id: String,
+        apns_team_id: String,
+        apns_environment: a2::client::Endpoint,
+        apns_topic: String,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut file = File::open(&apns_private_key_path)?;
+
+        let client = Client::token(
+            &mut file,
+            &apns_private_key_id,
+            &apns_team_id,
+            ClientConfig::new(apns_environment.clone()),
+        )?;
+
+        self.apns_client.replace(Mutex::new(client));
+        self.apns_topic.replace(apns_topic);
+
+        Ok(self)
+    }
+
+    pub fn with_fcm(
+        mut self,
+        google_services_file_path: impl Into<String>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        self.fcm_client
+            .replace(Mutex::new(FcmService::new(google_services_file_path)));
+        Ok(self)
+    }
+
+    pub fn has_backend(&self, backend: NotificationBackend) -> bool {
+        match backend {
+            NotificationBackend::APNS if !self.apns_client.is_some() => true,
+            NotificationBackend::FCM if self.fcm_client.is_some() => true,
+            _ => false,
+        }
+    }
     // MARK: - Database setup operations
 
     pub fn setup_database(db: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
@@ -295,6 +371,10 @@ impl NotificationManager {
             )",
             [],
         )?;
+
+        // Migration for FCM
+
+        Self::add_column_if_not_exists(db, "user_info", "backend", "TINYINT", Some("0"))?;
 
         Ok(())
     }
@@ -507,14 +587,14 @@ impl NotificationManager {
         pubkey: &PublicKey,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let user_device_tokens = self.get_user_device_tokens(pubkey).await?;
-        for device_token in user_device_tokens {
+        for (device_token, backend) in user_device_tokens {
             if !self
                 .user_wants_notification(pubkey, device_token.clone(), event)
                 .await?
             {
                 continue;
             }
-            self.send_event_notification_to_device_token(event, &device_token)
+            self.send_event_notification_to_device_token(event, &device_token, backend)
                 .await?;
         }
         Ok(())
@@ -564,7 +644,12 @@ impl NotificationManager {
         pubkey: &PublicKey,
         device_token: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let current_device_tokens = self.get_user_device_tokens(pubkey).await?;
+        let current_device_tokens: Vec<String> = self
+            .get_user_device_tokens(pubkey)
+            .await?
+            .into_iter()
+            .map(|(d, _)| d)
+            .collect();
         Ok(current_device_tokens.contains(&device_token.to_string()))
     }
 
@@ -578,12 +663,18 @@ impl NotificationManager {
     async fn get_user_device_tokens(
         &self,
         pubkey: &PublicKey,
-    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<(String, NotificationBackend)>, Box<dyn std::error::Error>> {
         let db_mutex_guard = self.db.lock().await;
         let connection = db_mutex_guard.get()?;
-        let mut stmt = connection.prepare("SELECT device_token FROM user_info WHERE pubkey = ?")?;
+        let mut stmt =
+            connection.prepare("SELECT device_token,backend FROM user_info WHERE pubkey = ?")?;
         let device_tokens = stmt
-            .query_map([pubkey.to_sql_string()], |row| row.get(0))?
+            .query_map([pubkey.to_sql_string()], |row| {
+                Ok((
+                    row.get::<usize, String>(0)?,
+                    row.get::<usize, u8>(1)?.into(),
+                ))
+            })?
             .filter_map(|r| r.ok())
             .collect();
         Ok(device_tokens)
@@ -623,11 +714,36 @@ impl NotificationManager {
         &self,
         event: &Event,
         device_token: &str,
+        backend: NotificationBackend,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let (title, subtitle, body) = self.format_notification_message(event);
-
         log::debug!("Sending notification to device token: {}", device_token);
 
+        match &backend {
+            NotificationBackend::APNS => {
+                self.send_event_notification_apns(event, device_token)
+                    .await?;
+            }
+            NotificationBackend::FCM => {
+                self.send_event_notification_fcm(event, device_token)
+                    .await?;
+            }
+        }
+
+        log::info!("Notification sent to device token: {}", device_token);
+        Ok(())
+    }
+
+    async fn send_event_notification_apns(
+        &self,
+        event: &Event,
+        device_token: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let client = self
+            .apns_client
+            .as_ref()
+            .ok_or(NotificationManagerError::APNSMissing)?;
+
+        let (title, subtitle, body) = self.format_notification_message(event);
         let mut payload = DefaultNotificationBuilder::new()
             .set_title(&title)
             .set_subtitle(&subtitle)
@@ -636,14 +752,15 @@ impl NotificationManager {
             .set_content_available()
             .build(device_token, Default::default());
 
-        payload.options.apns_topic = Some(self.apns_topic.as_str());
+        if let Some(t) = self.apns_topic.as_ref() {
+            payload.options.apns_topic = Some(t);
+        }
         payload.data.insert(
             "nostr_event",
             serde_json::Value::String(event.try_as_json()?),
         );
 
-        let apns_client_mutex_guard = self.apns_client.lock().await;
-
+        let apns_client_mutex_guard = client.lock().await;
         match apns_client_mutex_guard.send(payload).await {
             Ok(_response) => {}
             Err(e) => log::error!(
@@ -653,7 +770,29 @@ impl NotificationManager {
             ),
         }
 
-        log::info!("Notification sent to device token: {}", device_token);
+        Ok(())
+    }
+
+    async fn send_event_notification_fcm(
+        &self,
+        event: &Event,
+        device_token: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let client = self
+            .fcm_client
+            .as_ref()
+            .ok_or(NotificationManagerError::FCMMissing)?;
+
+        let (title, _, body) = self.format_notification_message(event);
+
+        let client = client.lock().await;
+        let mut msg = FcmMessage::new();
+        let mut notification = FcmNotification::new();
+        notification.set_title(title);
+        notification.set_body(body);
+        msg.set_notification(Some(notification));
+        msg.set_target(Target::Token(device_token.into()));
+        client.send_notification(msg).await?;
 
         Ok(())
     }
@@ -693,6 +832,7 @@ impl NotificationManager {
         &self,
         pubkey: nostr::PublicKey,
         device_token: &str,
+        backend: NotificationBackend,
     ) -> Result<(), Box<dyn std::error::Error>> {
         if self
             .is_pubkey_token_pair_registered(&pubkey, device_token)
@@ -700,23 +840,26 @@ impl NotificationManager {
         {
             return Ok(());
         }
-        self.save_user_device_info(pubkey, device_token).await
+        self.save_user_device_info(pubkey, device_token, backend)
+            .await
     }
 
     pub async fn save_user_device_info(
         &self,
         pubkey: nostr::PublicKey,
         device_token: &str,
+        backend: NotificationBackend,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let current_time_unix = Timestamp::now();
         let db_mutex_guard = self.db.lock().await;
         db_mutex_guard.get()?.execute(
-            "INSERT OR REPLACE INTO user_info (id, pubkey, device_token, added_at) VALUES (?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO user_info (id, pubkey, device_token, added_at, backend) VALUES (?, ?, ?, ?, ?)",
             params![
                 format!("{}:{}", pubkey.to_sql_string(), device_token),
                 pubkey.to_sql_string(),
                 device_token,
-                current_time_unix.to_sql_string()
+                current_time_unix.to_sql_string(),
+                <NotificationBackend as Into<u8>>::into(backend)
             ],
         )?;
         Ok(())
@@ -724,7 +867,7 @@ impl NotificationManager {
 
     pub async fn remove_user_device_info(
         &self,
-        pubkey: nostr::PublicKey,
+        pubkey: &PublicKey,
         device_token: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let db_mutex_guard = self.db.lock().await;
@@ -754,7 +897,9 @@ impl NotificationManager {
                 dm_notifications_enabled: row.get(4)?,
                 only_notifications_from_following_enabled: row.get(5)?,
                 hellthread_notifications_disabled: row.get::<_, Option<bool>>(6)?.unwrap_or(false),
-                hellthread_notifications_max_pubkeys: row.get::<_, Option<i8>>(7)?.unwrap_or(DEFAULT_HELLTHREAD_MAX_PUBKEYS),
+                hellthread_notifications_max_pubkeys: row
+                    .get::<_, Option<i8>>(7)?
+                    .unwrap_or(DEFAULT_HELLTHREAD_MAX_PUBKEYS),
             })
         })?;
 
@@ -791,7 +936,6 @@ impl NotificationManager {
 fn default_hellthread_max_pubkeys() -> i8 {
     DEFAULT_HELLTHREAD_MAX_PUBKEYS
 }
-
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct UserNotificationSettings {
