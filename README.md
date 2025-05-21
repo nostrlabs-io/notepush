@@ -13,11 +13,12 @@ A high performance Nostr relay for sending out push notifications using the Appl
 ```env
 APNS_TOPIC="com.your_org.your_app"        # Your app's bundle ID
 APNS_AUTH_PRIVATE_KEY_FILE_PATH=./AuthKey_1234567890.p8	# Path to the private key file used to generate JWT tokens with the Apple APNS server. You can obtain this from https://developer.apple.com/account/resources/authkeys/list
-APNS_AUTH_PRIVATE_KEY_ID=1234567890 # The ID of the private key used to generate JWT tokens with the Apple APNS server. You can obtain this from https://developer.apple.com/account/resources/authkeys/list
-APNS_ENVIRONMENT="development"    # The environment to use with the APNS server. Can be "development" or "production"
-APPLE_TEAM_ID=1248163264        # The ID of the team. Can be found in AppStore Connect.
+APNS_AUTH_PRIVATE_KEY_ID=1234567890     # The ID of the private key used to generate JWT tokens with the Apple APNS server. You can obtain this from https://developer.apple.com/account/resources/authkeys/list
+APNS_ENVIRONMENT="development"          # The environment to use with the APNS server. Can be "development" or "production"
+APPLE_TEAM_ID=1248163264                # The ID of the team. Can be found in AppStore Connect.
+GOOGLE_SERVICES_FILE_PATH="service-key.json" # Path to service account json (FCM)
 DB_PATH=./apns_notifications.db         # Path to the SQLite database file that will be used to store data about sent notifications, relative to the working directory
-RELAY_URL=wss://relay.damus.io           # URL to the relay server which will be consulted to get information such as mute lists.
+RELAY_URL=wss://relay.damus.io          # URL to the relay server which will be consulted to get information such as mute lists.
 HOST="0.0.0.0"                          # The host to bind the server to (Defaults to 0.0.0.0 to bind to all interfaces)
 PORT=8000                               # The port to bind the server to. Defaults to 8000
 API_BASE_URL=http://localhost:8000      # Base URL from the API is allowed access (used by the server to perform NIP-98 authentication)
