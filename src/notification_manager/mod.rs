@@ -10,17 +10,16 @@ use a2::{Client, ClientConfig, DefaultNotificationBuilder, NotificationBuilder};
 use nostr::key::PublicKey;
 use nostr::nips::nip51::MuteList;
 use nostr::types::Timestamp;
-use nostr_sdk::JsonUtil;
-use nostr_sdk::Kind;
+use nostr_sdk::{JsonUtil, Kind};
 use rusqlite::params;
 use serde::Deserialize;
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use fcm_service::{FcmMessage, FcmNotification, FcmService, Target};
-use nostr::Event;
+use nostr::{Event, TagKind};
 use nostr_event_extensions::Codable;
 use nostr_event_extensions::MaybeConvertibleToMuteList;
 use nostr_event_extensions::TimestampedMuteList;
@@ -408,7 +407,7 @@ ALTER TABLE user_info drop column dm_notifications_enabled;",
             "Checking if notifications need to be sent for event: {}",
             event.id
         );
-        let one_week_ago = nostr::Timestamp::now() - 7 * 24 * 60 * 60;
+        let one_week_ago = Timestamp::now() - 7 * 24 * 60 * 60;
         if event.created_at < one_week_ago {
             log::debug!("Event is older than a week, not sending notifications");
             return Ok(());
@@ -471,15 +470,20 @@ ALTER TABLE user_info drop column dm_notifications_enabled;",
     async fn pubkeys_to_notify_for_event(
         &self,
         event: &Event,
-    ) -> Result<HashSet<nostr::PublicKey>, Box<dyn std::error::Error>> {
+    ) -> Result<HashSet<PublicKey>, Box<dyn std::error::Error>> {
         let notification_status = self.get_notification_status(event).await?;
         let relevant_pubkeys = self.pubkeys_relevant_to_event(event);
+
+        // TODO: handle notifications for following live stream / article?
+
+
         let mut relevant_pubkeys_that_are_registered = HashSet::new();
         for pubkey in relevant_pubkeys {
             if self.is_pubkey_registered(&pubkey).await? {
                 relevant_pubkeys_that_are_registered.insert(pubkey);
             }
         }
+
         let pubkeys_that_received_notification =
             notification_status.pubkeys_that_received_notification();
         let relevant_pubkeys_yet_to_receive: HashSet<PublicKey> =
@@ -668,19 +672,18 @@ ALTER TABLE user_info drop column dm_notifications_enabled;",
         let mut stmt = connection.prepare(
             "SELECT pubkey, received_notification FROM notifications WHERE event_id = ?",
         )?;
-        let rows: std::collections::HashMap<PublicKey, bool> = stmt
-            .query_map([event.id.to_sql_string()], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })?
-            .filter_map(|r: Result<(String, bool), rusqlite::Error>| r.ok())
-            .filter_map(|r: (String, bool)| {
+
+        let rows: HashMap<PublicKey, bool> = stmt
+            .query_map([event.notification_id()], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .filter_map(|r| r.ok())
+            .filter_map(|r| {
                 let pubkey = PublicKey::from_sql_string(r.0).ok()?;
                 let received_notification = r.1;
                 Some((pubkey, received_notification))
             })
             .collect();
 
-        let mut status_info = std::collections::HashMap::new();
+        let mut status_info = HashMap::new();
         for row in rows {
             let (pubkey, received_notification) = row;
             status_info.insert(pubkey, received_notification);
@@ -722,10 +725,9 @@ ALTER TABLE user_info drop column dm_notifications_enabled;",
             .as_ref()
             .ok_or(NotificationManagerError::APNSMissing)?;
 
-        let (title, subtitle, body) = self.format_notification_message(event);
+        let (title, body) = self.format_notification_message(event);
         let mut payload = DefaultNotificationBuilder::new()
             .set_title(&title)
-            .set_subtitle(&subtitle)
             .set_body(&body)
             .set_mutable_content()
             .set_content_available()
@@ -762,7 +764,7 @@ ALTER TABLE user_info drop column dm_notifications_enabled;",
             .as_ref()
             .ok_or(NotificationManagerError::FCMMissing)?;
 
-        let (title, _, body) = self.format_notification_message(event);
+        let (title, body) = self.format_notification_message(event);
 
         let client = client.lock().await;
         let mut msg = FcmMessage::new();
@@ -771,21 +773,25 @@ ALTER TABLE user_info drop column dm_notifications_enabled;",
         notification.set_body(body);
         msg.set_notification(Some(notification));
         msg.set_target(Target::Token(device_token.into()));
+        msg.set_data(Some(HashMap::from([(
+            "nostr_event".to_string(),
+            event.as_json(),
+        )])));
         client.send_notification(msg).await?;
 
         Ok(())
     }
 
-    fn format_notification_message(&self, event: &Event) -> (String, String, String) {
+    fn format_notification_message(&self, event: &Event) -> (String, String) {
         // NOTE: This is simple because the client will handle formatting. These are just fallbacks.
-        let (title, body) = match event.kind {
-            nostr_sdk::Kind::TextNote => ("New activity".to_string(), event.content.clone()),
-            nostr_sdk::Kind::EncryptedDirectMessage => (
+        match event.kind {
+            Kind::TextNote => ("New activity".to_string(), event.content.clone()),
+            Kind::EncryptedDirectMessage => (
                 "New direct message".to_string(),
                 "Contents are encrypted".to_string(),
             ),
-            nostr_sdk::Kind::Repost => ("Someone reposted".to_string(), event.content.clone()),
-            nostr_sdk::Kind::Reaction => {
+            Kind::Repost => ("Someone reposted".to_string(), event.content.clone()),
+            Kind::Reaction => {
                 let content_text = event.content.clone();
                 let formatted_text = match content_text.as_str() {
                     "" => "❤️",
@@ -795,14 +801,23 @@ ALTER TABLE user_info drop column dm_notifications_enabled;",
                 };
                 ("New reaction".to_string(), formatted_text.to_string())
             }
-            nostr_sdk::Kind::ZapPrivateMessage => (
+            Kind::ZapPrivateMessage => (
                 "New zap private message".to_string(),
                 "Contents are encrypted".to_string(),
             ),
-            nostr_sdk::Kind::ZapReceipt => ("Someone zapped you".to_string(), "".to_string()),
+            Kind::ZapReceipt => ("Someone zapped you".to_string(), "".to_string()),
+            Kind::LiveEvent => (
+                "Stream is Live".to_string(),
+                event
+                    .tags
+                    .iter()
+                    .find(|t| t.kind() == TagKind::Title)
+                    .and_then(|t| t.content())
+                    .unwrap_or("")
+                    .to_string(),
+            ),
             _ => ("New activity".to_string(), "".to_string()),
-        };
-        (title, "".to_string(), body)
+        }
     }
 
     // MARK: - User device info and settings

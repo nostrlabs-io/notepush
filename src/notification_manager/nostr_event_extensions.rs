@@ -20,6 +20,11 @@ pub trait ExtendedEvent {
 
     /// Retrieves a set of hashtags (t tags) referenced by the note
     fn referenced_hashtags(&self) -> std::collections::HashSet<String>;
+
+    /// The unique id of this event (for notification tracking)
+    // I.e. for live streams only notify once when first seen
+    // also for articles we should notify when they are first posted only
+    fn notification_id(&self) -> String;
 }
 
 // This is a wrapper around the Event type from strfry-policies, which adds some useful methods
@@ -53,6 +58,21 @@ impl ExtendedEvent for nostr::Event {
             .iter()
             .map(|tag| tag.to_string())
             .collect()
+    }
+
+    fn notification_id(&self) -> String {
+        if self.is_parameterized_replaceable() {
+            format!(
+                "{}:{}:{}",
+                self.kind.as_u32(),
+                self.pubkey.to_hex(),
+                self.identifier().unwrap_or("")
+            )
+        } else if self.is_replaceable() {
+            format!("{}:{}", self.kind.as_u32(), self.pubkey)
+        } else {
+            self.id.to_sql_string()
+        }
     }
 }
 
