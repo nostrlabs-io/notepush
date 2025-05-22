@@ -290,7 +290,8 @@ impl NotificationManager {
             "CREATE TABLE IF NOT EXISTS user_info (
                 id TEXT PRIMARY KEY,
                 device_token TEXT,
-                pubkey TEXT
+                pubkey TEXT,
+                kinds TEXT
             )",
             [],
         )?;
