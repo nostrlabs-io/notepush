@@ -101,7 +101,7 @@ impl SqlStringConvertible for nostr::PublicKey {
     }
 
     fn from_sql_string(s: String) -> Result<Self, Box<dyn std::error::Error>> {
-        nostr::PublicKey::from_hex(s).map_err(|e| e.into())
+        PublicKey::from_hex(s).map_err(|e| e.into())
     }
 }
 

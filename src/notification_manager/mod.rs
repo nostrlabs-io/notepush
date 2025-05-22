@@ -19,7 +19,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use fcm_service::{FcmMessage, FcmNotification, FcmService, Target};
-use nostr::{Event, TagKind};
+use nostr::{Alphabet, Event, SingleLetterTag, TagKind};
 use nostr_event_extensions::Codable;
 use nostr_event_extensions::MaybeConvertibleToMuteList;
 use nostr_event_extensions::TimestampedMuteList;
@@ -346,7 +346,7 @@ impl NotificationManager {
         if (Self::add_column_if_not_exists(db, "user_info", "kinds", "TEXT", None)?) {
             // migrate existing settings into kinds col
             db.execute_batch(
-                r"
+                "
 UPDATE user_info
 SET kinds = TRIM(
     CASE WHEN zap_notifications_enabled = 1 THEN '9735,9733' ELSE '' END || ',' ||
@@ -363,6 +363,21 @@ ALTER TABLE user_info drop column reaction_notifications_enabled;
 ALTER TABLE user_info drop column dm_notifications_enabled;",
             )?;
         }
+
+        // Migration tracking priority notifications (notify me when somebody posts x)
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS notify_keys (
+                user_pubkey TEXT NOT NULL,
+                target_pubkey TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                kinds TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS notify_keys_user_target ON notify_keys (user_pubkey, target_pubkey);",
+        )?;
+
+        // Migration to avoid extra SQL query when inserting user_info
+        db.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS user_info_device ON user_info (pubkey, device_token);")?;
+
         Ok(())
     }
 
@@ -407,15 +422,23 @@ ALTER TABLE user_info drop column dm_notifications_enabled;",
             "Checking if notifications need to be sent for event: {}",
             event.id
         );
+        let event_started = match event.kind {
+            // Accept starts tag as when the stream started, otherwise use created_at timestamp
+            Kind::LiveEvent => event
+                .get_tag_content(TagKind::Starts)
+                .and_then(|t| Timestamp::from_str(&t).ok())
+                .unwrap_or(event.created_at),
+            _ => event.created_at,
+        };
         let one_week_ago = Timestamp::now() - 7 * 24 * 60 * 60;
-        if event.created_at < one_week_ago {
+        if event_started < one_week_ago {
             log::debug!("Event is older than a week, not sending notifications");
             return Ok(());
         }
 
         // Allow notes that are created no more than 3 seconds in the future
         // to account for natural clock skew between sender and receiver.
-        if event.created_at > Timestamp::now() + 3 {
+        if event_started > Timestamp::now() + 3 {
             log::debug!("Event was scheduled for the future, not sending notifications");
             return Ok(());
         }
@@ -442,7 +465,7 @@ ALTER TABLE user_info drop column dm_notifications_enabled;",
                     VALUES (?, ?, ?, ?, ?)",
                     params![
                         format!("{}:{}", event.id, pubkey),
-                        event.id.to_sql_string(),
+                        event.notification_id(),
                         pubkey.to_sql_string(),
                         true,
                         Timestamp::now().to_sql_string(),
@@ -472,11 +495,7 @@ ALTER TABLE user_info drop column dm_notifications_enabled;",
         event: &Event,
     ) -> Result<HashSet<PublicKey>, Box<dyn std::error::Error>> {
         let notification_status = self.get_notification_status(event).await?;
-        let relevant_pubkeys = self.pubkeys_relevant_to_event(event);
-
-        // TODO: handle notifications for following live stream / article?
-
-
+        let relevant_pubkeys = self.pubkeys_relevant_to_event(event).await?;
         let mut relevant_pubkeys_that_are_registered = HashSet::new();
         for pubkey in relevant_pubkeys {
             if self.is_pubkey_registered(&pubkey).await? {
@@ -552,8 +571,33 @@ ALTER TABLE user_info drop column dm_notifications_enabled;",
         )
     }
 
-    fn pubkeys_relevant_to_event(&self, event: &Event) -> HashSet<PublicKey> {
-        event.relevant_pubkeys()
+    async fn pubkeys_relevant_to_event(
+        &self,
+        event: &Event,
+    ) -> Result<HashSet<PublicKey>, Box<dyn std::error::Error>> {
+        let mut direct_keys = event.relevant_pubkeys();
+        let fake_target = match event.kind {
+            // accept p tagged host as target for notifications in live event
+            Kind::LiveEvent => event
+                .tags
+                .iter()
+                .find(|t| {
+                    t.kind() == TagKind::SingleLetter(SingleLetterTag::lowercase(Alphabet::P))
+                        && t.as_vec()[3] == "host"
+                })
+                .and_then(|t| PublicKey::from_hex(t.content()?).ok())
+                .unwrap_or(event.pubkey),
+            _ => event.pubkey,
+        };
+        let notify_keys = self.get_notify_from_target(&fake_target).await?;
+        direct_keys.extend(
+            notify_keys
+                .into_iter()
+                .filter(|k| k.1.contains(&event.kind))
+                .map(|k| k.0),
+        );
+
+        Ok(direct_keys)
     }
 
     fn pubkeys_referenced_by_event(&self, event: &Event) -> HashSet<PublicKey> {
@@ -643,6 +687,31 @@ ALTER TABLE user_info drop column dm_notifications_enabled;",
         Ok(!self.get_user_device_tokens(pubkey).await?.is_empty())
     }
 
+    async fn get_notify_from_target(
+        &self,
+        target: &PublicKey,
+    ) -> Result<Vec<(PublicKey, Vec<Kind>)>, Box<dyn std::error::Error>> {
+        let db_mutex_guard = self.db.lock().await;
+        let connection = db_mutex_guard.get()?;
+        let mut stmt =
+            connection.prepare("SELECT user_pubkey FROM notify_keys WHERE target_pubkey = ?")?;
+        let pubkeys = stmt
+            .query_map([target.to_sql_string()], |row| {
+                let key = PublicKey::from_hex(row.get::<_, String>(0)?.as_str())
+                    .map_err(|_| rusqlite::Error::QueryReturnedNoRows)?;
+                let kinds: String = row.get(1)?;
+                let kinds: Vec<Kind> = kinds
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .map_while(|s| Kind::from_str(&s).ok())
+                    .collect();
+                Ok((key, kinds))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(pubkeys)
+    }
+
     async fn get_user_device_tokens(
         &self,
         pubkey: &PublicKey,
@@ -674,7 +743,9 @@ ALTER TABLE user_info drop column dm_notifications_enabled;",
         )?;
 
         let rows: HashMap<PublicKey, bool> = stmt
-            .query_map([event.notification_id()], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .query_map([event.notification_id()], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
             .filter_map(|r| r.ok())
             .filter_map(|r| {
                 let pubkey = PublicKey::from_sql_string(r.0).ok()?;
@@ -822,22 +893,6 @@ ALTER TABLE user_info drop column dm_notifications_enabled;",
 
     // MARK: - User device info and settings
 
-    pub async fn save_user_device_info_if_not_present(
-        &self,
-        pubkey: nostr::PublicKey,
-        device_token: &str,
-        backend: NotificationBackend,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        if self
-            .is_pubkey_token_pair_registered(&pubkey, device_token)
-            .await?
-        {
-            return Ok(());
-        }
-        self.save_user_device_info(pubkey, device_token, backend)
-            .await
-    }
-
     pub async fn save_user_device_info(
         &self,
         pubkey: PublicKey,
@@ -847,7 +902,7 @@ ALTER TABLE user_info drop column dm_notifications_enabled;",
         let current_time_unix = Timestamp::now();
         let db_mutex_guard = self.db.lock().await;
         db_mutex_guard.get()?.execute(
-            "INSERT OR REPLACE INTO user_info (id, pubkey, device_token, added_at, backend) VALUES (?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO user_info (id, pubkey, device_token, added_at, backend) VALUES (?, ?, ?, ?, ?)",
             params![
                 format!("{}:{}", pubkey.to_sql_string(), device_token),
                 pubkey.to_sql_string(),
@@ -868,6 +923,57 @@ ALTER TABLE user_info drop column dm_notifications_enabled;",
         db_mutex_guard.get()?.execute(
             "DELETE FROM user_info WHERE pubkey = ? AND device_token = ?",
             params![pubkey.to_sql_string(), device_token],
+        )?;
+        Ok(())
+    }
+
+    pub async fn get_notify_keys(
+        &self,
+        pubkey: PublicKey,
+    ) -> Result<Vec<PublicKey>, Box<dyn std::error::Error>> {
+        let db_mutex_guard = self.db.lock().await;
+        let conn = db_mutex_guard.get()?;
+        let mut stmt =
+            conn.prepare("select target_pubkey from notify_keys where user_pubkey = ?")?;
+        let pubkeys = stmt
+            .query_map([pubkey.to_sql_string()], |row| {
+                Ok(PublicKey::from_hex(row.get::<_, String>(0)?.as_str()))
+            })?
+            .flatten()
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(pubkeys)
+    }
+
+    pub async fn save_notify_key(
+        &self,
+        pubkey: PublicKey,
+        target: PublicKey,
+        kinds: Vec<Kind>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let current_time_unix = Timestamp::now();
+        let db_mutex_guard = self.db.lock().await;
+        db_mutex_guard.get()?.execute(
+            "INSERT OR REPLACE INTO notify_keys (user_pubkey, target_pubkey, created_at, kinds) VALUES (?, ?, ?, ?)",
+            params![
+                pubkey.to_sql_string(),
+                target.to_sql_string(),
+                current_time_unix.to_sql_string(),
+                kinds.iter().map(|k| k.as_u32().to_string()).collect::<Vec<String>>().join(",")
+            ]
+        )?;
+        Ok(())
+    }
+
+    pub async fn delete_notify_key(
+        &self,
+        pubkey: PublicKey,
+        target: PublicKey,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db_mutex_guard = self.db.lock().await;
+        db_mutex_guard.get()?.execute(
+            "delete from notify_keys where user_pubkey = ? and target_pubkey = ?",
+            params![pubkey.to_sql_string(), target.to_sql_string()],
         )?;
         Ok(())
     }
@@ -935,6 +1041,12 @@ ALTER TABLE user_info drop column dm_notifications_enabled;",
 
 fn default_hellthread_max_pubkeys() -> i8 {
     DEFAULT_HELLTHREAD_MAX_PUBKEYS
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct KindsSettings {
+    #[serde(default)]
+    pub kinds: Vec<Kind>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

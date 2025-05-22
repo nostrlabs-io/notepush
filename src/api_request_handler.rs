@@ -1,5 +1,5 @@
 use crate::nip98_auth;
-use crate::notification_manager::{NotificationBackend, UserNotificationSettings};
+use crate::notification_manager::{KindsSettings, NotificationBackend, UserNotificationSettings};
 use crate::relay_connection::RelayConnection;
 use http_body_util::Full;
 use hyper::body::Buf;
@@ -7,16 +7,14 @@ use hyper::body::Bytes;
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use std::borrow::Cow;
-
 use http_body_util::BodyExt;
-use serde_json::from_value;
-
 use crate::notification_manager::NotificationManager;
 use hyper::Method;
 use log::warn;
 use matchit::{Params, Router};
 use nostr::prelude::url::form_urlencoded;
 use nostr::PublicKey;
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -181,9 +179,16 @@ impl APIHandler {
         enum RouteMatch {
             UserInfo,
             UserSetting,
+            NotifySetting,
+            GetNotify,
         }
         let mut routes = Router::new();
         routes.insert("/user-info/{pubkey}/{deviceToken}", RouteMatch::UserInfo)?;
+        routes.insert(
+            "/user-info/{pubkey}/notify/{target}",
+            RouteMatch::NotifySetting,
+        )?;
+        routes.insert("/user-info/{pubkey}/notify", RouteMatch::GetNotify)?;
         routes.insert(
             "/user-info/{pubkey}/{deviceToken}/preference",
             RouteMatch::UserSetting,
@@ -202,6 +207,15 @@ impl APIHandler {
                 }
                 RouteMatch::UserSetting if parsed_request.method == Method::PUT => {
                     return self.set_user_settings(parsed_request, m.params).await;
+                }
+                RouteMatch::GetNotify if parsed_request.method == Method::GET => {
+                    return self.get_notify_keys(parsed_request, m.params).await;
+                }
+                RouteMatch::NotifySetting if parsed_request.method == Method::PUT => {
+                    return self.put_notify_key(parsed_request, m.params).await;
+                }
+                RouteMatch::NotifySetting if parsed_request.method == Method::DELETE => {
+                    return self.delete_notify_key(parsed_request, m.params).await;
                 }
                 _ => {
                     // fallthrough to 404
@@ -262,30 +276,19 @@ impl APIHandler {
                 .unwrap_or(&"apns".to_string()),
         ) {
             Ok(token) => token,
-            Err(_) => {
-                return Ok(APIResponse {
-                    status: StatusCode::BAD_REQUEST,
-                    body: json!({ "error": "backend is invalid" }),
-                })
-            }
+            Err(_) => return Ok(APIResponse::bad_request("Backend is invalid")),
         };
 
         // Early return if backend is not supported
         if !self.notification_manager.has_backend(backend) {
-            return Ok(APIResponse {
-                status: StatusCode::BAD_REQUEST,
-                body: json!({ "error": "Backend not supported" }),
-            });
+            return Ok(APIResponse::bad_request("Backend not supported"));
         }
 
         // Proceed with the main logic after passing all checks
         self.notification_manager
-            .save_user_device_info_if_not_present(pubkey, &device_token, backend)
+            .save_user_device_info(pubkey, &device_token, backend)
             .await?;
-        Ok(APIResponse {
-            status: StatusCode::OK,
-            body: json!({ "message": "User info saved successfully" }),
-        })
+        Ok(APIResponse::ok("User info saved successfully"))
     }
 
     async fn handle_user_info_remove(
@@ -302,10 +305,64 @@ impl APIHandler {
             .remove_user_device_info(&pubkey, &device_token)
             .await?;
 
-        Ok(APIResponse {
-            status: StatusCode::OK,
-            body: json!({ "message": "User info removed successfully" }),
-        })
+        Ok(APIResponse::ok("User info removed successfully"))
+    }
+
+    async fn get_notify_keys(
+        &self,
+        req: &ParsedRequest,
+        url_params: Params<'_, '_>,
+    ) -> Result<APIResponse, Box<dyn std::error::Error>> {
+        let pubkey = get_required_param(&url_params, "pubkey")?;
+        let pubkey = check_pubkey(&pubkey, req)?;
+
+        let keys = self.notification_manager.get_notify_keys(pubkey).await?;
+
+        Ok(APIResponse::ok_body(&keys))
+    }
+
+    async fn put_notify_key(
+        &self,
+        req: &ParsedRequest,
+        url_params: Params<'_, '_>,
+    ) -> Result<APIResponse, Box<dyn std::error::Error>> {
+        let pubkey = get_required_param(&url_params, "pubkey")?;
+        let pubkey = check_pubkey(&pubkey, req)?;
+        let target = get_required_param(&url_params, "target")?;
+        let target = parse_pubkey(&target)?;
+
+        let settings: KindsSettings = if let Some(s) = req
+            .body_bytes
+            .as_ref()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+        {
+            s
+        } else {
+            return Ok(APIResponse::bad_request("Invalid or missing settings"));
+        };
+
+        self.notification_manager
+            .save_notify_key(pubkey, target, settings.kinds)
+            .await?;
+
+        Ok(APIResponse::ok("Saved notification target successfully"))
+    }
+
+    async fn delete_notify_key(
+        &self,
+        req: &ParsedRequest,
+        url_params: Params<'_, '_>,
+    ) -> Result<APIResponse, Box<dyn std::error::Error>> {
+        let pubkey = get_required_param(&url_params, "pubkey")?;
+        let pubkey = check_pubkey(&pubkey, req)?;
+        let target = get_required_param(&url_params, "target")?;
+        let target = parse_pubkey(&target)?;
+
+        self.notification_manager
+            .delete_notify_key(pubkey, target)
+            .await?;
+
+        Ok(APIResponse::ok("Deleted notification target successfully"))
     }
 
     async fn set_user_settings(
@@ -317,27 +374,21 @@ impl APIHandler {
         let pubkey = get_required_param(&url_params, "pubkey")?;
         let pubkey = check_pubkey(&pubkey, req)?;
 
-        // Proceed with the main logic after passing all checks
-        let body = req.body_json()?;
-
-        let settings: UserNotificationSettings = match from_value(body.clone()) {
-            Ok(settings) => settings,
-            Err(_) => {
-                return Ok(APIResponse {
-                    status: StatusCode::BAD_REQUEST,
-                    body: json!({ "error": "Invalid settings" }),
-                });
-            }
+        let settings: UserNotificationSettings = if let Some(s) = req
+            .body_bytes
+            .as_ref()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+        {
+            s
+        } else {
+            return Ok(APIResponse::bad_request("Invalid or missing settings"));
         };
 
         self.notification_manager
             .save_user_notification_settings(&pubkey, device_token.to_string(), settings)
             .await?;
 
-        Ok(APIResponse {
-            status: StatusCode::OK,
-            body: json!({ "message": "User settings saved successfully" }),
-        })
+        Ok(APIResponse::ok("User settings saved successfully"))
     }
 
     async fn get_user_settings(
@@ -355,10 +406,7 @@ impl APIHandler {
             .get_user_notification_settings(&pubkey, device_token.to_string())
             .await?;
 
-        Ok(APIResponse {
-            status: StatusCode::OK,
-            body: json!(settings),
-        })
+        Ok(APIResponse::ok_body(&settings))
     }
 }
 
@@ -407,6 +455,29 @@ impl ParsedRequest {
 struct APIResponse {
     status: StatusCode,
     body: Value,
+}
+
+impl APIResponse {
+    pub fn ok(msg: &str) -> APIResponse {
+        APIResponse {
+            status: StatusCode::OK,
+            body: json!({ "message": msg }),
+        }
+    }
+
+    pub fn ok_body<T: Serialize>(body: &T) -> APIResponse {
+        APIResponse {
+            status: StatusCode::OK,
+            body: json!(body),
+        }
+    }
+
+    pub fn bad_request(msg: &str) -> APIResponse {
+        APIResponse {
+            status: StatusCode::BAD_REQUEST,
+            body: json!({ "error": msg }),
+        }
+    }
 }
 
 fn get_required_param(params: &Params<'_, '_>, key: &str) -> Result<String, APIError> {
