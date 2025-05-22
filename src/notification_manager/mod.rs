@@ -15,7 +15,7 @@ use nostr_sdk::Kind;
 use rusqlite::params;
 use serde::Deserialize;
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -792,6 +792,10 @@ impl NotificationManager {
         notification.set_body(body);
         msg.set_notification(Some(notification));
         msg.set_target(Target::Token(device_token.into()));
+        msg.set_data(Some(HashMap::from([(
+            "nostr_event".to_string(),
+            event.as_json(),
+        )])));
         client.send_notification(msg).await?;
 
         Ok(())
