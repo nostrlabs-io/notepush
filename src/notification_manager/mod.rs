@@ -85,8 +85,10 @@ pub enum NotificationManagerError {
     FCMMissing,
 }
 
+type DatabaseArc = Arc<Mutex<r2d2::Pool<SqliteConnectionManager>>>;
+
 pub struct NotificationManager {
-    db: Arc<Mutex<r2d2::Pool<SqliteConnectionManager>>>,
+    db: DatabaseArc,
     apns_topic: Option<String>,
     apns_client: Option<Mutex<Client>>,
     fcm_client: Option<Mutex<FcmService>>,
@@ -96,11 +98,11 @@ pub struct NotificationManager {
 
 #[derive(Clone)]
 pub struct EventSaver {
-    db: Arc<Mutex<r2d2::Pool<SqliteConnectionManager>>>,
+    db: DatabaseArc,
 }
 
 impl EventSaver {
-    pub fn new(db: Arc<Mutex<r2d2::Pool<SqliteConnectionManager>>>) -> Self {
+    pub fn new(db: DatabaseArc) -> Self {
         Self { db }
     }
 
@@ -307,41 +309,6 @@ impl NotificationManager {
         Self::add_column_if_not_exists(
             db,
             "user_info",
-            "zap_notifications_enabled",
-            "BOOLEAN",
-            Some("true"),
-        )?;
-        Self::add_column_if_not_exists(
-            db,
-            "user_info",
-            "mention_notifications_enabled",
-            "BOOLEAN",
-            Some("true"),
-        )?;
-        Self::add_column_if_not_exists(
-            db,
-            "user_info",
-            "repost_notifications_enabled",
-            "BOOLEAN",
-            Some("true"),
-        )?;
-        Self::add_column_if_not_exists(
-            db,
-            "user_info",
-            "reaction_notifications_enabled",
-            "BOOLEAN",
-            Some("true"),
-        )?;
-        Self::add_column_if_not_exists(
-            db,
-            "user_info",
-            "dm_notifications_enabled",
-            "BOOLEAN",
-            Some("true"),
-        )?;
-        Self::add_column_if_not_exists(
-            db,
-            "user_info",
             "only_notifications_from_following_enabled",
             "BOOLEAN",
             Some("false"),
@@ -376,6 +343,27 @@ impl NotificationManager {
 
         Self::add_column_if_not_exists(db, "user_info", "backend", "TINYINT", Some("0"))?;
 
+        // Migration to kinds based preferences
+        if (Self::add_column_if_not_exists(db, "user_info", "kinds", "TEXT", None)?) {
+            // migrate existing settings into kinds col
+            db.execute_batch(
+                r"
+UPDATE user_info
+SET kinds = TRIM(
+    CASE WHEN zap_notifications_enabled = 1 THEN '9735,9733' ELSE '' END || ',' ||
+    CASE WHEN mention_notifications_enabled = 1 THEN '1' ELSE '' END || ',' ||
+    CASE WHEN repost_notifications_enabled = 1 THEN '6,17' ELSE '' END || ',' ||
+    CASE WHEN reaction_notifications_enabled = 1 THEN '7' ELSE '' END || ',' ||
+    CASE WHEN dm_notifications_enabled = 1 THEN '4' ELSE '' END,
+    ','
+);
+ALTER TABLE user_info drop column zap_notifications_enabled;
+ALTER TABLE user_info drop column mention_notifications_enabled;
+ALTER TABLE user_info drop column repost_notifications_enabled;
+ALTER TABLE user_info drop column reaction_notifications_enabled;
+ALTER TABLE user_info drop column dm_notifications_enabled;",
+            )?;
+        }
         Ok(())
     }
 
@@ -385,7 +373,7 @@ impl NotificationManager {
         column_name: &str,
         column_type: &str,
         default_value: Option<&str>,
-    ) -> Result<(), rusqlite::Error> {
+    ) -> Result<bool, rusqlite::Error> {
         let query = format!("PRAGMA table_info({})", table_name);
         let mut stmt = db.prepare(&query)?;
         let column_names: Vec<String> = stmt
@@ -405,11 +393,12 @@ impl NotificationManager {
                 },
             );
             db.execute(&query, [])?;
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
     }
 
-    // MARK: - Business logic
+    // MARK: - "Business" logic
 
     pub async fn send_notifications_if_needed(
         &self,
@@ -457,7 +446,7 @@ impl NotificationManager {
                         event.id.to_sql_string(),
                         pubkey.to_sql_string(),
                         true,
-                        nostr::Timestamp::now().to_sql_string(),
+                        Timestamp::now().to_sql_string(),
                     ],
                 )?;
             }
@@ -465,16 +454,16 @@ impl NotificationManager {
         Ok(())
     }
 
-    fn is_event_kind_supported(event_kind: nostr::Kind) -> bool {
+    fn is_event_kind_supported(event_kind: Kind) -> bool {
         match event_kind {
-            nostr_sdk::Kind::TextNote => true,
-            nostr_sdk::Kind::EncryptedDirectMessage => true,
-            nostr_sdk::Kind::Repost => true,
-            nostr_sdk::Kind::GenericRepost => true,
-            nostr_sdk::Kind::Reaction => true,
-            nostr_sdk::Kind::ZapPrivateMessage => true,
-            nostr_sdk::Kind::ZapRequest => false,
-            nostr_sdk::Kind::ZapReceipt => true,
+            Kind::TextNote => true,
+            Kind::EncryptedDirectMessage => true,
+            Kind::Repost => true,
+            Kind::GenericRepost => true,
+            Kind::Reaction => true,
+            Kind::ZapPrivateMessage => true,
+            Kind::ZapReceipt => true,
+            Kind::LiveEvent => true,
             _ => false,
         }
     }
@@ -626,17 +615,7 @@ impl NotificationManager {
                 }
             }
         }
-        match event.kind {
-            Kind::TextNote => Ok(notification_preferences.mention_notifications_enabled), // TODO: Not 100% accurate
-            Kind::EncryptedDirectMessage => Ok(notification_preferences.dm_notifications_enabled),
-            Kind::Repost => Ok(notification_preferences.repost_notifications_enabled),
-            Kind::GenericRepost => Ok(notification_preferences.repost_notifications_enabled),
-            Kind::Reaction => Ok(notification_preferences.reaction_notifications_enabled),
-            Kind::ZapPrivateMessage => Ok(notification_preferences.zap_notifications_enabled),
-            Kind::ZapRequest => Ok(notification_preferences.zap_notifications_enabled),
-            Kind::ZapReceipt => Ok(notification_preferences.zap_notifications_enabled),
-            _ => Ok(false),
-        }
+        Ok(notification_preferences.merge_kinds().contains(&event.kind))
     }
 
     async fn is_pubkey_token_pair_registered(
@@ -846,7 +825,7 @@ impl NotificationManager {
 
     pub async fn save_user_device_info(
         &self,
-        pubkey: nostr::PublicKey,
+        pubkey: PublicKey,
         device_token: &str,
         backend: NotificationBackend,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -886,20 +865,28 @@ impl NotificationManager {
         let db_mutex_guard = self.db.lock().await;
         let connection = db_mutex_guard.get()?;
         let mut stmt = connection.prepare(
-            "SELECT zap_notifications_enabled, mention_notifications_enabled, repost_notifications_enabled, reaction_notifications_enabled, dm_notifications_enabled, only_notifications_from_following_enabled, hellthread_notifications_disabled, hellthread_notifications_max_pubkeys FROM user_info WHERE pubkey = ? AND device_token = ?",
+            "SELECT kinds, only_notifications_from_following_enabled, hellthread_notifications_disabled, hellthread_notifications_max_pubkeys FROM user_info WHERE pubkey = ? AND device_token = ?",
         )?;
         let settings = stmt.query_row([pubkey.to_sql_string(), device_token], |row| {
+            let kinds: String = row.get(0)?;
+            let kinds: Vec<Kind> = kinds
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .map_while(|s| Kind::from_str(&s).ok())
+                .collect();
             Ok(UserNotificationSettings {
-                zap_notifications_enabled: row.get(0)?,
-                mention_notifications_enabled: row.get(1)?,
-                repost_notifications_enabled: row.get(2)?,
-                reaction_notifications_enabled: row.get(3)?,
-                dm_notifications_enabled: row.get(4)?,
-                only_notifications_from_following_enabled: row.get(5)?,
-                hellthread_notifications_disabled: row.get::<_, Option<bool>>(6)?.unwrap_or(false),
+                zap_notifications_enabled: kinds.contains(&Kind::ZapReceipt),
+                mention_notifications_enabled: kinds.contains(&Kind::TextNote),
+                repost_notifications_enabled: kinds.contains(&Kind::Repost)
+                    || kinds.contains(&Kind::GenericRepost),
+                reaction_notifications_enabled: kinds.contains(&Kind::Reaction),
+                dm_notifications_enabled: kinds.contains(&Kind::EncryptedDirectMessage),
+                only_notifications_from_following_enabled: row.get(1)?,
+                hellthread_notifications_disabled: row.get::<_, Option<bool>>(2)?.unwrap_or(false),
                 hellthread_notifications_max_pubkeys: row
-                    .get::<_, Option<i8>>(7)?
+                    .get::<_, Option<i8>>(3)?
                     .unwrap_or(DEFAULT_HELLTHREAD_MAX_PUBKEYS),
+                kinds,
             })
         })?;
 
@@ -915,13 +902,11 @@ impl NotificationManager {
         let db_mutex_guard = self.db.lock().await;
         let connection = db_mutex_guard.get()?;
         connection.execute(
-            "UPDATE user_info SET zap_notifications_enabled = ?, mention_notifications_enabled = ?, repost_notifications_enabled = ?, reaction_notifications_enabled = ?, dm_notifications_enabled = ?, only_notifications_from_following_enabled = ?, hellthread_notifications_disabled = ?, hellthread_notifications_max_pubkeys = ? WHERE pubkey = ? AND device_token = ?",
+            "UPDATE user_info SET kinds = ?, only_notifications_from_following_enabled = ?, hellthread_notifications_disabled = ?, hellthread_notifications_max_pubkeys = ? WHERE pubkey = ? AND device_token = ?",
             params![
-                settings.zap_notifications_enabled,
-                settings.mention_notifications_enabled,
-                settings.repost_notifications_enabled,
-                settings.reaction_notifications_enabled,
-                settings.dm_notifications_enabled,
+                settings.merge_kinds().iter()
+                    .map(|k| k.as_u32().to_string())
+                    .collect::<Vec<String>>().join(","),
                 settings.only_notifications_from_following_enabled,
                 settings.hellthread_notifications_disabled,
                 max(HELLTHREAD_MIN_PUBKEYS, min(HELLTHREAD_MAX_PUBKEYS, settings.hellthread_notifications_max_pubkeys)),
@@ -939,11 +924,17 @@ fn default_hellthread_max_pubkeys() -> i8 {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct UserNotificationSettings {
+    #[serde(default)]
     zap_notifications_enabled: bool,
+    #[serde(default)]
     mention_notifications_enabled: bool,
+    #[serde(default)]
     repost_notifications_enabled: bool,
+    #[serde(default)]
     reaction_notifications_enabled: bool,
+    #[serde(default)]
     dm_notifications_enabled: bool,
+    #[serde(default)]
     only_notifications_from_following_enabled: bool,
 
     #[serde(default)]
@@ -951,6 +942,35 @@ pub struct UserNotificationSettings {
 
     #[serde(default = "default_hellthread_max_pubkeys")]
     hellthread_notifications_max_pubkeys: i8,
+
+    /// Generic nostr event kinds
+    #[serde(default)]
+    kinds: Vec<Kind>,
+}
+
+impl UserNotificationSettings {
+    /// Merge kinds array will boolean flags
+    pub fn merge_kinds(&self) -> Vec<Kind> {
+        let mut ret: HashSet<Kind> = self.kinds.clone().into_iter().collect();
+        if (self.zap_notifications_enabled) {
+            ret.insert(Kind::ZapReceipt);
+            ret.insert(Kind::ZapPrivateMessage);
+        }
+        if (self.mention_notifications_enabled) {
+            ret.insert(Kind::TextNote);
+        }
+        if (self.repost_notifications_enabled) {
+            ret.insert(Kind::Repost);
+            ret.insert(Kind::GenericRepost);
+        }
+        if (self.reaction_notifications_enabled) {
+            ret.insert(Kind::Reaction);
+        }
+        if (self.dm_notifications_enabled) {
+            ret.insert(Kind::EncryptedDirectMessage);
+        }
+        ret.into_iter().collect()
+    }
 }
 
 struct NotificationStatus {
