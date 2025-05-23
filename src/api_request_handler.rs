@@ -59,9 +59,9 @@ impl APIHandler {
             return Ok(Response::builder()
                 .header("Content-Type", "text/html")
                 .header("Access-Control-Allow-Origin", "*")
-                .body(Full::new(Bytes::from_static(
-                    include_bytes!("./index.html"),
-                )))?);
+                .body(Full::new(Bytes::from_static(include_bytes!(
+                    "./index.html"
+                ))))?);
         }
 
         // If not, handle the request as a normal API request.
@@ -120,11 +120,8 @@ impl APIHandler {
 
         let new_notification_manager = self.notification_manager.clone();
         tokio::spawn(async move {
-            match RelayConnection::run(websocket, new_notification_manager).await {
-                Ok(_) => {}
-                Err(e) => {
-                    log::error!("Error with websocket connection: {:?}", e);
-                }
+            if let Err(e) = RelayConnection::run(websocket, new_notification_manager).await {
+                log::error!("Error with websocket connection: {}", e.to_string());
             }
         });
 
@@ -135,7 +132,7 @@ impl APIHandler {
         &self,
         mut req: Request<Incoming>,
         config: &NotePushConfig,
-    ) -> Result<APIResponse, Box<dyn std::error::Error>> {
+    ) -> Result<APIResponse, Box<dyn std::error::Error + Send + Sync>> {
         let parsed_request = self.parse_http_request(&mut req).await?;
         let api_response: APIResponse = self
             .handle_parsed_http_request(&parsed_request, config)
@@ -147,7 +144,7 @@ impl APIHandler {
     async fn parse_http_request(
         &self,
         req: &mut Request<Incoming>,
-    ) -> Result<ParsedRequest, Box<dyn std::error::Error>> {
+    ) -> Result<ParsedRequest, Box<dyn std::error::Error + Send + Sync>> {
         // 1. Read the request body
         let body_buffer = req.body_mut().collect().await?.aggregate();
         let body_bytes = body_buffer.chunk();
@@ -187,7 +184,7 @@ impl APIHandler {
         &self,
         parsed_request: &ParsedRequest,
         config: &NotePushConfig,
-    ) -> Result<APIResponse, Box<dyn std::error::Error>> {
+    ) -> Result<APIResponse, Box<dyn std::error::Error + Send + Sync>> {
         enum RouteMatch {
             UserInfo,
             UserSetting,
@@ -261,7 +258,7 @@ impl APIHandler {
         &self,
         req: &ParsedRequest,
         url_params: Params<'_, '_>,
-    ) -> Result<APIResponse, Box<dyn std::error::Error>> {
+    ) -> Result<APIResponse, Box<dyn std::error::Error + Send + Sync>> {
         let device_token = get_required_param(&url_params, "deviceToken")?;
         let pubkey = get_required_param(&url_params, "pubkey")?;
         let pubkey = check_pubkey(&pubkey, req)?;
@@ -293,7 +290,7 @@ impl APIHandler {
         &self,
         req: &ParsedRequest,
         url_params: Params<'_, '_>,
-    ) -> Result<APIResponse, Box<dyn std::error::Error>> {
+    ) -> Result<APIResponse, Box<dyn std::error::Error + Send + Sync>> {
         let device_token = get_required_param(&url_params, "deviceToken")?;
         let pubkey = get_required_param(&url_params, "pubkey")?;
         let pubkey = check_pubkey(&pubkey, req)?;
@@ -310,7 +307,7 @@ impl APIHandler {
         &self,
         req: &ParsedRequest,
         url_params: Params<'_, '_>,
-    ) -> Result<APIResponse, Box<dyn std::error::Error>> {
+    ) -> Result<APIResponse, Box<dyn std::error::Error + Send + Sync>> {
         let pubkey = get_required_param(&url_params, "pubkey")?;
         let pubkey = check_pubkey(&pubkey, req)?;
 
@@ -323,7 +320,7 @@ impl APIHandler {
         &self,
         req: &ParsedRequest,
         url_params: Params<'_, '_>,
-    ) -> Result<APIResponse, Box<dyn std::error::Error>> {
+    ) -> Result<APIResponse, Box<dyn std::error::Error + Send + Sync>> {
         let pubkey = get_required_param(&url_params, "pubkey")?;
         let pubkey = check_pubkey(&pubkey, req)?;
         let target = get_required_param(&url_params, "target")?;
@@ -350,7 +347,7 @@ impl APIHandler {
         &self,
         req: &ParsedRequest,
         url_params: Params<'_, '_>,
-    ) -> Result<APIResponse, Box<dyn std::error::Error>> {
+    ) -> Result<APIResponse, Box<dyn std::error::Error + Send + Sync>> {
         let pubkey = get_required_param(&url_params, "pubkey")?;
         let pubkey = check_pubkey(&pubkey, req)?;
         let target = get_required_param(&url_params, "target")?;
@@ -367,7 +364,7 @@ impl APIHandler {
         &self,
         req: &ParsedRequest,
         url_params: Params<'_, '_>,
-    ) -> Result<APIResponse, Box<dyn std::error::Error>> {
+    ) -> Result<APIResponse, Box<dyn std::error::Error + Send + Sync>> {
         let device_token = get_required_param(&url_params, "deviceToken")?;
         let pubkey = get_required_param(&url_params, "pubkey")?;
         let pubkey = check_pubkey(&pubkey, req)?;
@@ -393,7 +390,7 @@ impl APIHandler {
         &self,
         req: &ParsedRequest,
         url_params: Params<'_, '_>,
-    ) -> Result<APIResponse, Box<dyn std::error::Error>> {
+    ) -> Result<APIResponse, Box<dyn std::error::Error + Send + Sync>> {
         let device_token = get_required_param(&url_params, "deviceToken")?;
         let pubkey = get_required_param(&url_params, "pubkey")?;
         let pubkey = check_pubkey(&pubkey, req)?;
@@ -401,7 +398,7 @@ impl APIHandler {
         // Proceed with the main logic after passing all checks
         let settings = self
             .notification_manager
-            .get_user_notification_settings(&pubkey, device_token.to_string())
+            .get_user_notification_settings(&pubkey, &device_token)
             .await?;
 
         Ok(APIResponse::ok_body(&settings))

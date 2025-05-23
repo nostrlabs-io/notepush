@@ -72,7 +72,7 @@ impl RelayConnection {
         &mut self,
         raw_message: Result<Message, Error>,
         stream: &mut WebSocketStream<TokioIo<Upgraded>>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let raw_message = raw_message?;
         self.run_loop_iteration(raw_message, stream).await
     }
@@ -81,7 +81,7 @@ impl RelayConnection {
         &mut self,
         raw_message: Message,
         stream: &mut WebSocketStream<TokioIo<Upgraded>>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if raw_message.is_text() {
             let message: ClientMessage =
                 ClientMessage::from_value(Value::from_str(raw_message.to_text()?)?)?;
@@ -98,7 +98,7 @@ impl RelayConnection {
     async fn handle_client_message(
         &self,
         message: ClientMessage,
-    ) -> Result<RelayMessage, Box<dyn std::error::Error>> {
+    ) -> Result<RelayMessage, Box<dyn std::error::Error + Send + Sync>> {
         match message {
             ClientMessage::Event(event) => {
                 self.notification_manager.handle_event(&event).await?;

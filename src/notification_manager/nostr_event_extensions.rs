@@ -80,7 +80,7 @@ impl ExtendedEvent for nostr::Event {
 
 pub trait SqlStringConvertible {
     fn to_sql_string(&self) -> String;
-    fn from_sql_string(s: String) -> Result<Self, Box<dyn std::error::Error>>
+    fn from_sql_string(s: String) -> Result<Self, Box<dyn std::error::Error + Send + Sync>>
     where
         Self: Sized;
 }
@@ -90,7 +90,7 @@ impl SqlStringConvertible for nostr::EventId {
         self.to_hex()
     }
 
-    fn from_sql_string(s: String) -> Result<Self, Box<dyn std::error::Error>> {
+    fn from_sql_string(s: String) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         nostr::EventId::from_hex(s).map_err(|e| e.into())
     }
 }
@@ -100,7 +100,7 @@ impl SqlStringConvertible for nostr::PublicKey {
         self.to_hex()
     }
 
-    fn from_sql_string(s: String) -> Result<Self, Box<dyn std::error::Error>> {
+    fn from_sql_string(s: String) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         PublicKey::from_hex(s).map_err(|e| e.into())
     }
 }
@@ -110,7 +110,7 @@ impl SqlStringConvertible for nostr::Timestamp {
         self.as_u64().to_string()
     }
 
-    fn from_sql_string(s: String) -> Result<Self, Box<dyn std::error::Error>> {
+    fn from_sql_string(s: String) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let u64_timestamp: u64 = s.parse()?;
         Ok(nostr::Timestamp::from(u64_timestamp))
     }
@@ -180,14 +180,14 @@ impl MaybeConvertibleToRelayList for nostr::Event {
 /// A trait for types that can be encoded to and decoded from JSON, specific to this crate.
 /// This is defined to overcome the rust compiler's limitation of implementing a trait for a type that is not defined in the same crate.
 pub trait Codable {
-    fn to_json(&self) -> Result<serde_json::Value, Box<dyn std::error::Error>>;
-    fn from_json(json: serde_json::Value) -> Result<Self, Box<dyn std::error::Error>>
+    fn to_json(&self) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>>;
+    fn from_json(json: serde_json::Value) -> Result<Self, Box<dyn std::error::Error + Send + Sync>>
     where
         Self: Sized;
 }
 
 impl Codable for MuteList {
-    fn to_json(&self) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    fn to_json(&self) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
         Ok(serde_json::json!({
             "public_keys": self.public_keys.iter().map(|pk| pk.to_hex()).collect::<Vec<String>>(),
             "hashtags": self.hashtags.clone(),
@@ -196,7 +196,7 @@ impl Codable for MuteList {
         }))
     }
 
-    fn from_json(json: serde_json::Value) -> Result<Self, Box<dyn std::error::Error>>
+    fn from_json(json: serde_json::Value) -> Result<Self, Box<dyn std::error::Error + Send + Sync>>
     where
         Self: Sized,
     {

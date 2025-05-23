@@ -21,7 +21,7 @@ impl NostrNetworkHelper {
         relay_url: String,
         cache_max_age: Duration,
         event_saver: EventSaver,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let client = Client::new(Keys::generate());
         client.add_relay(relay_url.clone()).await?;
         client.connect().await;
