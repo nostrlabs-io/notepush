@@ -1,21 +1,22 @@
+use crate::config::NotePushConfig;
 use crate::nip98_auth;
+use crate::notification_manager::NotificationManager;
 use crate::notification_manager::{KindsSettings, NotificationBackend, UserNotificationSettings};
 use crate::relay_connection::RelayConnection;
+use http_body_util::BodyExt;
 use http_body_util::Full;
 use hyper::body::Buf;
 use hyper::body::Bytes;
 use hyper::body::Incoming;
-use hyper::{Request, Response, StatusCode};
-use std::borrow::Cow;
-use http_body_util::BodyExt;
-use crate::notification_manager::NotificationManager;
 use hyper::Method;
+use hyper::{Request, Response, StatusCode};
 use log::warn;
 use matchit::{Params, Router};
 use nostr::prelude::url::form_urlencoded;
-use nostr::PublicKey;
+use nostr::{Event, PublicKey};
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::borrow::Cow;
 use std::str::FromStr;
 use std::sync::Arc;
 use thiserror::Error;
@@ -38,6 +39,7 @@ impl APIHandler {
     pub async fn handle_http_request(
         &self,
         req: Request<Incoming>,
+        config: &NotePushConfig,
     ) -> Result<Response<Full<Bytes>>, hyper::http::Error> {
         // Check if the request is a websocket upgrade request.
         if hyper_tungstenite::is_upgrade_request(&req) {
@@ -47,15 +49,26 @@ impl APIHandler {
                     log::error!("Error handling websocket upgrade request: {}", err);
                     Ok(Response::builder()
                         .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(http_body_util::Full::new(Bytes::from(
-                            "Internal server error",
-                        )))?)
+                        .body(Full::new(Bytes::from("Internal server error")))?)
                 }
             };
         }
 
+        // Handle root request
+        if req.uri().path() == "/" || req.uri().path() == "/index.html" {
+            return Ok(Response::builder()
+                .header("Content-Type", "text/html")
+                .header("Access-Control-Allow-Origin", "*")
+                .body(Full::new(Bytes::from_static(
+                    include_bytes!("./index.html"),
+                )))?);
+        }
+
         // If not, handle the request as a normal API request.
-        let final_api_response: APIResponse = match self.try_to_handle_http_request(req).await {
+        let final_api_response: APIResponse = match self
+            .try_to_handle_http_request(req, config)
+            .await
+        {
             Ok(api_response) => APIResponse {
                 status: api_response.status,
                 body: api_response.body,
@@ -121,16 +134,13 @@ impl APIHandler {
     async fn try_to_handle_http_request(
         &self,
         mut req: Request<Incoming>,
+        config: &NotePushConfig,
     ) -> Result<APIResponse, Box<dyn std::error::Error>> {
         let parsed_request = self.parse_http_request(&mut req).await?;
-        let api_response: APIResponse = self.handle_parsed_http_request(&parsed_request).await?;
-        log::info!(
-            "[{}] {} (Authorized pubkey: {}): {}",
-            req.method(),
-            req.uri(),
-            parsed_request.authorized_pubkey,
-            api_response.status
-        );
+        let api_response: APIResponse = self
+            .handle_parsed_http_request(&parsed_request, config)
+            .await?;
+        log::info!("[{}] {}: {}", req.method(), req.uri(), api_response.status);
         Ok(api_response)
     }
 
@@ -147,20 +157,21 @@ impl APIHandler {
             Some(body_bytes)
         };
 
-        // 2. NIP-98 authentication
-        let authorized_pubkey = match self.authenticate(req, body_bytes).await? {
-            Ok(pubkey) => pubkey,
-            Err(auth_error) => {
-                return Err(Box::new(APIError::AuthenticationError(auth_error)));
-            }
-        };
-
         // 3. Parse the request
         Ok(ParsedRequest {
-            uri: req.uri().path().to_string(),
+            path: req.uri().path().to_string(),
+            absolute_uri: format!(
+                "{}{}",
+                self.base_url,
+                req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("")
+            ),
             method: req.method().clone(),
             body_bytes: body_bytes.map(|b| b.to_vec()),
-            authorized_pubkey,
+            auth_header: req
+                .headers()
+                .get("Authorization")
+                .and_then(|h| h.to_str().ok())
+                .map(|h| h.to_string()),
             query: match req.uri().query() {
                 Some(q) => form_urlencoded::parse(q.as_bytes())
                     .map(|(k, v)| (k.into_owned(), v.into_owned()))
@@ -175,14 +186,17 @@ impl APIHandler {
     async fn handle_parsed_http_request(
         &self,
         parsed_request: &ParsedRequest,
+        config: &NotePushConfig,
     ) -> Result<APIResponse, Box<dyn std::error::Error>> {
         enum RouteMatch {
             UserInfo,
             UserSetting,
             NotifySetting,
             GetNotify,
+            WebPushInfo,
         }
         let mut routes = Router::new();
+        routes.insert("/web", RouteMatch::WebPushInfo)?;
         routes.insert("/user-info/{pubkey}/{deviceToken}", RouteMatch::UserInfo)?;
         routes.insert(
             "/user-info/{pubkey}/notify/{target}",
@@ -194,7 +208,7 @@ impl APIHandler {
             RouteMatch::UserSetting,
         )?;
 
-        match routes.at(&parsed_request.uri) {
+        match routes.at(&parsed_request.path) {
             Ok(m) => match m.value {
                 RouteMatch::UserInfo if parsed_request.method == Method::PUT => {
                     return self.handle_user_info(parsed_request, m.params).await;
@@ -217,6 +231,15 @@ impl APIHandler {
                 RouteMatch::NotifySetting if parsed_request.method == Method::DELETE => {
                     return self.delete_notify_key(parsed_request, m.params).await;
                 }
+                RouteMatch::WebPushInfo if parsed_request.method == Method::GET => {
+                    #[derive(Serialize)]
+                    struct WebPushInfo {
+                        vaapi_key: Option<String>,
+                    }
+                    return Ok(APIResponse::ok_body(&WebPushInfo {
+                        vaapi_key: config.fcm.as_ref().and_then(|c| c.vaapi_key.clone()),
+                    }));
+                }
                 _ => {
                     // fallthrough to 404
                 }
@@ -230,31 +253,6 @@ impl APIHandler {
             status: StatusCode::NOT_FOUND,
             body: json!({ "error": "Not found" }),
         })
-    }
-
-    // MARK: - Authentication
-
-    async fn authenticate(
-        &self,
-        req: &Request<Incoming>,
-        body_bytes: Option<&[u8]>,
-    ) -> Result<Result<PublicKey, String>, Box<dyn std::error::Error>> {
-        let auth_header = match req.headers().get("Authorization") {
-            Some(header) => header,
-            None => return Ok(Err("Authorization header not found".to_string())),
-        };
-
-        Ok(nip98_auth::nip98_verify_auth_header(
-            auth_header.to_str()?.to_string(),
-            &format!(
-                "{}{}",
-                self.base_url,
-                req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("")
-            ),
-            req.method().as_str(),
-            body_bytes,
-        )
-        .await)
     }
 
     // MARK: - Endpoint handlers
@@ -435,10 +433,11 @@ enum APIError {
 }
 
 struct ParsedRequest {
-    uri: String,
+    absolute_uri: String,
+    path: String,
+    auth_header: Option<String>,
     method: Method,
     body_bytes: Option<Vec<u8>>,
-    authorized_pubkey: nostr::PublicKey,
     query: Vec<(String, String)>,
 }
 
@@ -449,6 +448,22 @@ impl ParsedRequest {
         } else {
             Ok(json!({}))
         }
+    }
+
+    fn authenticate(&self) -> Result<Event, APIError> {
+        let auth = self
+            .auth_header
+            .as_ref()
+            .ok_or(APIError::AuthenticationError(
+                "Auth header missing".to_string(),
+            ))?;
+        nip98_auth::nip98_verify_auth_header(
+            auth,
+            &self.absolute_uri,
+            self.method.as_str(),
+            &self.body_bytes,
+        )
+        .map_err(|e| APIError::AuthenticationError(e.to_string()))
     }
 }
 
@@ -498,7 +513,8 @@ fn parse_pubkey(pubkey: &str) -> Result<PublicKey, APIError> {
 
 fn check_pubkey(pubkey: &str, req: &ParsedRequest) -> Result<PublicKey, APIError> {
     let pubkey = parse_pubkey(pubkey)?;
-    if pubkey != req.authorized_pubkey {
+    let auth = req.authenticate()?;
+    if pubkey != auth.pubkey {
         Err(APIError::AuthenticationError(
             "pubkey doesnt match authorized pubkey".to_string(),
         ))

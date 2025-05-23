@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Notepush API Endpoints Documentation</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 20px;
+            max-width: 1000px;
+            margin-left: auto;
+            margin-right: auto;
+            background-color: #1e1e1e;
+            color: #e0e0e0;
+        }
+        h1, h2 {
+            color: #ffffff;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #444;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #2d2d2d;
+            color: #ffffff;
+        }
+        code {
+            background-color: #333;
+            padding: 2px 4px;
+            border-radius: 3px;
+            color: #ffcccb;
+        }
+        .method {
+            font-weight: bold;
+            color: #4fc3f7;
+        }
+        .param-list {
+            margin: 10px 0;
+        }
+        .param-list li {
+            margin-bottom: 5px;
+        }
+        .section {
+            margin-bottom: 20px;
+        }
+        a {
+            color: #4fc3f7;
+        }
+        a:hover {
+            color: #81d4fa;
+        }
+    </style>
+</head>
+<body>
+<h1>Notepush API Endpoints Documentation</h1>
+<p>This document describes the API endpoints for the Notepush application, which manages push notifications and user settings using the Nostr protocol. All endpoints except <code>/web</code> require authentication via a Nostr event in the <code>Authorization</code> header, as per NIP-98. The <code>pubkey</code> in the path must match the public key in the authentication event.</p>
+
+<div class="section">
+    <h2>1. Web Push Information</h2>
+    <table>
+        <tr>
+            <th>Endpoint</th>
+            <th>HTTP Method</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td><code>/web</code></td>
+            <td><span class="method">GET</span></td>
+            <td>Retrieves web push information for Notepush, including the VAPID key for FCM.</td>
+        </tr>
+    </table>
+    <ul class="param-list">
+        <li><strong>Authentication:</strong> Not required</li>
+        <li><strong>Query Parameters:</strong> None</li>
+        <li><strong>Response Body:</strong> JSON object of type <code>WebPushInfo</code>
+            <ul>
+                <li><code>vaapi_key</code>: <code>Option<String></code> - VAPID key from FCM configuration, if available</li>
+            </ul>
+        </li>
+        <li><strong>Success Response:</strong> <code>200 OK</code> with JSON body, e.g., <code>{"vaapi_key": "example_key"}</code></li>
+        <li><strong>Error Responses:</strong> None</li>
+    </ul>
+</div>
+
+<div class="section">
+    <h2>2. User Information Management</h2>
+    <table>
+        <tr>
+            <th>Endpoint</th>
+            <th>HTTP Method</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td><code>/user-info/{pubkey}/{deviceToken}</code></td>
+            <td><span class="method">PUT</span></td>
+            <td>Updates user device information with the specified public key and device token.</td>
+        </tr>
+        <tr>
+            <td><code>/user-info/{pubkey}/{deviceToken}</code></td>
+            <td><span class="method">DELETE</span></td>
+            <td>Removes user device information for the specified public key and device token.</td>
+        </tr>
+    </table>
+    <ul class="param-list">
+        <li><strong>Authentication:</strong> Required (NIP-98 <code>Authorization</code> header with Nostr <code>Event</code>)</li>
+        <li><strong>Path Parameters:</strong>
+            <ul>
+                <li><code>pubkey</code>: <code>PublicKey</code> - User public key in hex format (required, validated against auth event)</li>
+                <li><code>deviceToken</code>: <code>String</code> - Device token (required, URL-encoded)</li>
+            </ul>
+        </li>
+        <li><strong>Query Parameters (PUT only):</strong>
+            <ul>
+                <li><code>backend</code>: <code>NotificationBackend</code> - Notification backend (optional, defaults to <code>"apns"</code>; must be a supported backend, e.g., APNS, FCM)</li>
+            </ul>
+        </li>
+        <li><strong>Request Body (PUT only):</strong> None</li>
+        <li><strong>Success Response (PUT):</strong> <code>200 OK</code> with JSON body: <code>{"message": "User info saved successfully"}</code></li>
+        <li><strong>Success Response (DELETE):</strong> <code>200 OK</code> with JSON body: <code>{"message": "User info removed successfully"}</code></li>
+        <li><strong>Error Responses:</strong>
+            <ul>
+                <li><code>400 Bad Request</code>: Invalid <code>pubkey</code>, <code>deviceToken</code>, or unsupported <code>backend</code></li>
+                <li><code>401 Unauthorized</code>: Missing or invalid <code>Authorization</code> header, or <code>pubkey</code> mismatch with auth event</li>
+                <li><code>500 Internal Server Error</code>: Unexpected server error (includes case ID for debugging)</li>
+            </ul>
+        </li>
+    </ul>
+</div>
+
+<div class="section">
+    <h2>3. Notification Settings Management</h2>
+    <table>
+        <tr>
+            <th>Endpoint</th>
+            <th>HTTP Method</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td><code>/user-info/{pubkey}/notify/{target}</code></td>
+            <td><span class="method">PUT</span></td>
+            <td>Sets or updates notification settings for a specific user and target.</td>
+        </tr>
+        <tr>
+            <td><code>/user-info/{pubkey}/notify/{target}</code></td>
+            <td><span class="method">DELETE</span></td>
+            <td>Deletes notification settings for a specific user and target.</td>
+        </tr>
+        <tr>
+            <td><code>/user-info/{pubkey}/notify</code></td>
+            <td><span class="method">GET</span></td>
+            <td>Retrieves notification settings for a specific user.</td>
+        </tr>
+    </table>
+    <ul class="param-list">
+        <li><strong>Authentication:</strong> Required (NIP-98 <code>Authorization</code> header with Nostr <code>Event</code>)</li>
+        <li><strong>Path Parameters:</strong>
+            <ul>
+                <li><code>pubkey</code>: <code>PublicKey</code> - User public key in hex format (required, validated against auth event)</li>
+                <li><code>target</code>: <code>PublicKey</code> - Target public key in hex format (required for PUT and DELETE, validated)</li>
+            </ul>
+        </li>
+        <li><strong>Request Body (PUT only):</strong> JSON object of type <code>KindsSettings</code>, e.g., <code>{"kinds": {...}}</code></li>
+        <li><strong>Response Body (GET only):</strong> JSON array of notification keys (type not specified in code, depends on <code>NotificationManager::get_notify_keys</code>)</li>
+        <li><strong>Success Response (PUT):</strong> <code>200 OK</code> with JSON body: <code>{"message": "Saved notification target successfully"}</code></li>
+        <li><strong>Success Response (DELETE):</strong> <code>200 OK</code> with JSON body: <code>{"message": "Deleted notification target successfully"}</code></li>
+        <li><strong>Success Response (GET):</strong> <code>200 OK</code> with JSON body containing notification keys</li>
+        <li><strong>Error Responses:</strong>
+            <ul>
+                <li><code>400 Bad Request</code>: Invalid <code>pubkey</code>, <code>target</code>, or missing/invalid <code>KindsSettings</code> in request body</li>
+                <li><code>401 Unauthorized</code>: Missing or invalid <code>Authorization</code> header, or <code>pubkey</code> mismatch with auth event</li>
+                <li><code>500 Internal Server Error</code>: Unexpected server error (includes case ID for debugging)</li>
+            </ul>
+        </li>
+    </ul>
+</div>
+
+<div class="section">
+    <h2>4. User Preferences Management</h2>
+    <table>
+        <tr>
+            <th>Endpoint</th>
+            <th>HTTP Method</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td><code>/user-info/{pubkey}/{deviceToken}/preference</code></td>
+            <td><span class="method">GET</span></td>
+            <td>Retrieves user notification preferences for a specific public key and device token.</td>
+        </tr>
+        <tr>
+            <td><code>/user-info/{pubkey}/{deviceToken}/preference</code></td>
+            <td><span class="method">PUT</span></td>
+            <td>Updates user notification preferences for a specific public key and device token.</td>
+        </tr>
+    </table>
+    <ul class="param-list">
+        <li><strong>Authentication:</strong> Required (NIP-98 <code>Authorization</code> header with Nostr <code>Event</code>)</li>
+        <li><strong>Path Parameters:</strong>
+            <ul>
+                <li><code>pubkey</code>: <code>PublicKey</code> - User public key in hex format (required, validated against auth event)</li>
+                <li><code>deviceToken</code>: <code>String</code> - Device token (required, URL-encoded)</li>
+            </ul>
+        </li>
+        <li><strong>Request Body (PUT only):</strong> JSON object of type <code>UserNotificationSettings</code>, e.g., <code>{"settings": {...}}</code></li>
+        <li><strong>Response Body (GET only):</strong> JSON object of type <code>UserNotificationSettings</code></li>
+        <li><strong>Success Response (GET):</strong> <code>200 OK</code> with JSON body containing user notification settings</li>
+        <li><strong>Success Response (PUT):</strong> <code>200 OK</code> with JSON body: <code>{"message": "User settings saved successfully"}</code></li>
+        <li><strong>Error Responses:</strong>
+            <ul>
+                <li><code>400 Bad Request</code>: Invalid <code>pubkey</code>, <code>deviceToken</code>, or missing/invalid <code>UserNotificationSettings</code> in request body</li>
+                <li><code>401 Unauthorized</code>: Missing or invalid <code>Authorization</code> header, or <code>pubkey</code> mismatch with auth event</li>
+                <li><code>500 Internal Server Error</code>: Unexpected server error (includes case ID for debugging)</li>
+            </ul>
+        </li>
+    </ul>
+</div>
+
+<div class="section">
+    <h2>5. Root and WebSocket</h2>
+    <table>
+        <tr>
+            <th>Endpoint</th>
+            <th>HTTP Method</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td><code>/</code> or <code>/index.html</code></td>
+            <td><span class="method">GET</span></td>
+            <td>Serves the static index.html page for Notepush.</td>
+        </tr>
+        <tr>
+            <td><code>/*</code></td>
+            <td><span class="method">WebSocket</span></td>
+            <td>Handles WebSocket upgrade requests for real-time notification relay.</td>
+        </tr>
+    </table>
+    <ul class="param-list">
+        <li><strong>Authentication (WebSocket):</strong> Not specified in handler</li>
+        <li><strong>Response (GET):</strong> Static HTML content</li>
+        <li><strong>Response (WebSocket):</strong> WebSocket upgrade response</li>
+        <li><strong>Success Response (GET):</strong> <code>200 OK</code> with HTML content</li>
+        <li><strong>Success Response (WebSocket):</strong> <code>101 Switching Protocols</code></li>
+        <li><strong>Error Responses (WebSocket):</strong>
+            <ul>
+                <li><code>500 Internal Server Error</code>: Failed WebSocket upgrade</li>
+            </ul>
+        </li>
+    </ul>
+</div>
+
+<div class="section">
+    <h2>Authentication</h2>
+    <p>All endpoints except <code>/web</code> and <code>/</code> require authentication via a Nostr event in the <code>Authorization</code> header, following NIP-98. The event must:</p>
+    <ul class="param-list">
+        <li>Match the request method and URI.</li>
+        <li>Include a valid <code>pubkey</code> that matches the <code>pubkey</code> path parameter.</li>
+        <li>Be verifiable using <code>nip98_auth::nip98_verify_auth_header</code>.</li>
+    </ul>
+    <p><strong>Error Responses for Authentication:</strong></p>
+    <ul class="param-list">
+        <li><code>401 Unauthorized</code>: Missing <code>Authorization</code> header, invalid Nostr event, or <code>pubkey</code> mismatch</li>
+    </ul>
+</div>
+
+<div class="section">
+    <h2>Error Handling</h2>
+    <p>Common error responses across all endpoints include:</p>
+    <ul class="param-list">
+        <li><code>400 Bad Request</code>: Invalid or missing parameters, invalid request body</li>
+        <li><code>401 Unauthorized</code>: Authentication failure</li>
+        <li><code>404 Not Found</code>: Unmatched endpoint</li>
+        <li><code>500 Internal Server Error</code>: Unexpected server errors (includes a unique case ID for debugging)</li>
+    </ul>
+</div>
+</body>
+</html>

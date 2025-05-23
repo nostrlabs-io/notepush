@@ -9,4 +9,4 @@ tags
 .env
 .DS_Store
 *.p8
-apns_notifications.db
+*.db

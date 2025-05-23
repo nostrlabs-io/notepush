@@ -1,0 +1,29 @@
+# APNs config to send notifications
+#apns:
+#  # The path to the Apple private key .p8 file
+#  key_path: my_key.p8
+#  key_id: 1234567
+#  team_id: 1248163264
+#  environment: development
+#  topic: com.your_org.your_app
+
+# FCM config to send notifications
+fcm:
+  google_services_file_path: "./google-services.json"
+  vaapi_key: my_vaapi_pubkey
+
+# Public URL of this service
+api_base_url: http://localhost:8000
+
+# Relay to pull profile data from (Mute lists)
+relay_url: wss://relay.damus.io
+
+# The max age of the Nostr event cache, in seconds
+nostr_event_cache_max_age: 600
+
+# Relays to listen to events on
+pull_relays:
+  - "wss://relay.damus.io"
+  - "wss://relay.primal.net"
+  - "wss://nos.lol"
+  - "wss://relay.snort.social"

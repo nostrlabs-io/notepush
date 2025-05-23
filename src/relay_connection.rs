@@ -101,15 +101,7 @@ impl RelayConnection {
     ) -> Result<RelayMessage, Box<dyn std::error::Error>> {
         match message {
             ClientMessage::Event(event) => {
-                log::info!("Received event with id: {:?}", event.id.to_hex());
-                log::debug!("Event received: {:?}", event);
-                self.notification_manager
-                    .event_saver
-                    .save_if_needed(&event)
-                    .await?;
-                self.notification_manager
-                    .send_notifications_if_needed(&event)
-                    .await?;
+                self.notification_manager.handle_event(&event).await?;
                 let notice_message = "blocked: This relay does not store events".to_string();
                 let response = RelayMessage::Ok {
                     event_id: event.id,

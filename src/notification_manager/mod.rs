@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use fcm_service::{FcmMessage, FcmNotification, FcmService, Target};
+use fcm_service::{FcmMessage, FcmNotification, FcmService, Target, WebpushConfig};
 use nostr::{Alphabet, Event, SingleLetterTag, TagKind};
 use nostr_event_extensions::Codable;
 use nostr_event_extensions::MaybeConvertibleToMuteList;
@@ -252,11 +252,23 @@ impl NotificationManager {
 
     pub fn with_fcm(
         mut self,
-        google_services_file_path: impl Into<String>,
+        google_services_file_path: impl Into<String>
     ) -> Result<Self, Box<dyn std::error::Error>> {
         self.fcm_client
             .replace(Mutex::new(FcmService::new(google_services_file_path)));
         Ok(self)
+    }
+
+    pub async fn handle_event(&self, event: &Event) -> Result<(), Box<dyn std::error::Error>> {
+        log::info!(
+            "Received event kind={},id={}",
+            event.kind.as_u32(),
+            event.notification_id(),
+        );
+        log::debug!("Event received: {:?}", event);
+        self.event_saver.save_if_needed(&event).await?;
+        self.send_notifications_if_needed(&event).await?;
+        Ok(())
     }
 
     pub fn has_backend(&self, backend: NotificationBackend) -> bool {
@@ -477,18 +489,22 @@ ALTER TABLE user_info drop column dm_notifications_enabled;",
         Ok(())
     }
 
+    pub fn supported_kinds() -> Vec<Kind> {
+        vec![
+            Kind::TextNote,
+            Kind::EncryptedDirectMessage,
+            Kind::Repost,
+            Kind::GenericRepost,
+            Kind::Reaction,
+            Kind::ZapPrivateMessage,
+            Kind::ZapReceipt,
+            Kind::LiveEvent,
+            Kind::LongFormTextNote,
+        ]
+    }
+
     fn is_event_kind_supported(event_kind: Kind) -> bool {
-        match event_kind {
-            Kind::TextNote => true,
-            Kind::EncryptedDirectMessage => true,
-            Kind::Repost => true,
-            Kind::GenericRepost => true,
-            Kind::Reaction => true,
-            Kind::ZapPrivateMessage => true,
-            Kind::ZapReceipt => true,
-            Kind::LiveEvent => true,
-            _ => false,
-        }
+        Self::supported_kinds().contains(&event_kind)
     }
 
     async fn pubkeys_to_notify_for_event(

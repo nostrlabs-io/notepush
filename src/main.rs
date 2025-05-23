@@ -1,12 +1,20 @@
 #![forbid(unsafe_code)]
+
 use hyper_util::rt::TokioIo;
+use nostr::{Filter, Timestamp};
+use nostr_sdk::{Client, RelayPoolNotification};
+use std::ops::Deref;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
 mod notification_manager;
 use r2d2_sqlite::SqliteConnectionManager;
-mod notepush_env;
+mod config;
 mod relay_connection;
-use notepush_env::NotePushEnv;
+use crate::config::{DEFAULT_DB_PATH, DEFAULT_NOSTR_EVENT_CACHE_MAX_AGE, DEFAULT_RELAY_URL};
+use crate::notification_manager::NotificationManager;
+use config::NotePushConfig;
+
 mod api_request_handler;
 mod nip98_auth;
 mod utils;
@@ -17,43 +25,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     env_logger::init();
 
-    let env = NotePushEnv::load_env().expect("Failed to load environment variables");
-    let listener = TcpListener::bind(&env.relay_address())
+    let cfg = NotePushConfig::load_env().expect("Failed to load environment variables");
+    let listener = TcpListener::bind(&cfg.relay_address())
         .await
         .expect("Failed to bind to address");
-    log::info!("Server running at {}", env.relay_address());
+    log::info!("Server running at {}", cfg.relay_address());
 
-    let manager = SqliteConnectionManager::file(env.db_path.clone());
+    let manager = SqliteConnectionManager::file(
+        cfg.db_path
+            .as_ref()
+            .unwrap_or(&DEFAULT_DB_PATH.to_string())
+            .to_owned(),
+    );
+
     let pool: r2d2::Pool<SqliteConnectionManager> =
         r2d2::Pool::new(manager).expect("Failed to create SQLite connection pool");
+
     // Notification manager is a shared resource that will be used by all connections via a mutex and an atomic reference counter.
     // This is shared to avoid data races when reading/writing to the sqlite database, and reduce outgoing relay connections.
-    let mut notification_manager = notification_manager::NotificationManager::new(
+    let mut notification_manager = NotificationManager::new(
         pool,
-        env.relay_url.clone(),
-        env.nostr_event_cache_max_age,
+        cfg.relay_url
+            .as_ref()
+            .unwrap_or(&DEFAULT_RELAY_URL.to_string())
+            .clone(),
+        Duration::from_secs(
+            cfg.nostr_event_cache_max_age
+                .unwrap_or(DEFAULT_NOSTR_EVENT_CACHE_MAX_AGE),
+        ),
     )
     .await
     .expect("Failed to create notification manager");
 
     // setup apns if key path is set
-    if let Some(apns_key) = &env.apns_private_key_path {
+    if let Some(cfg) = &cfg.apns {
         notification_manager = notification_manager
             .with_apns(
-                apns_key.clone(),
-                env.apns_private_key_id.unwrap().clone(),
-                env.apns_team_id.unwrap().clone(),
-                env.apns_environment.clone(),
-                env.apns_topic.unwrap().clone(),
+                cfg.key_path.clone(),
+                cfg.key_id.clone(),
+                cfg.team_id.clone(),
+                cfg.endpoint(),
+                cfg.topic.clone(),
             )
             .expect("Failed to set APNs");
         log::info!("APNS configured for notifications manager!");
     }
 
     // setup fcm if google services path is set
-    if let Some(gsp) = &env.google_services_file_path {
+    if let Some(fcm) = &cfg.fcm {
         notification_manager = notification_manager
-            .with_fcm(gsp)
+            .with_fcm(fcm.google_services_file_path.clone())
             .expect("Failed to setup FCM");
         log::info!("FCM configured for notifications manager!");
     }
@@ -61,8 +82,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let notification_manager = Arc::new(notification_manager);
     let api_handler = Arc::new(api_request_handler::APIHandler::new(
         notification_manager.clone(),
-        env.api_base_url.clone(),
+        cfg.api_base_url.clone(),
     ));
+
+    // start relay puller if configured
+    if !cfg.pull_relays.is_empty() {
+        let mgr = notification_manager.clone();
+        let relays = cfg.pull_relays.clone();
+        tokio::spawn(async move {
+            if let Err(e) = pull_events(mgr, &relays).await {
+                log::error!("Failed to pull events: {}", e);
+            }
+        });
+    }
 
     loop {
         let (stream, _) = listener.accept().await?;
@@ -71,9 +103,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut http = hyper::server::conn::http1::Builder::new();
         http.keep_alive(true);
 
+        let cfg = cfg.clone();
         tokio::task::spawn(async move {
             let service =
-                hyper::service::service_fn(|req| api_handler_clone.handle_http_request(req));
+                hyper::service::service_fn(|req| api_handler_clone.handle_http_request(req, &cfg));
 
             let connection = http.serve_connection(io, service).with_upgrades();
 
@@ -82,4 +115,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
         });
     }
+}
+
+// pull events from relays to send as notifications
+async fn pull_events(
+    mgr: Arc<NotificationManager>,
+    relays: &Vec<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::new(nostr_sdk::key::Keys::generate());
+    for relay in relays {
+        client.add_relay(relay).await?;
+    }
+    client.connect().await;
+
+    // request supported kinds from all relays
+    client
+        .subscribe(
+            vec![Filter::default()
+                .kinds(NotificationManager::supported_kinds())
+                .since(Timestamp::now())],
+            None,
+        )
+        .await;
+
+    let mut notif = client.notifications();
+    while let Ok(msg) = notif.recv().await {
+        match msg {
+            RelayPoolNotification::Event { event, .. } => {
+                if let Err(e) = mgr.handle_event(event.deref()).await {
+                    log::error!("Failed to handle event {:?}", e);
+                }
+            }
+            RelayPoolNotification::Message { .. } => {}
+            RelayPoolNotification::RelayStatus { .. } => {}
+            RelayPoolNotification::Stop => {}
+            RelayPoolNotification::Shutdown => {}
+        }
+    }
+    Ok(())
 }

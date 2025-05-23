@@ -8,20 +8,44 @@ A high performance Nostr relay for sending out push notifications using the Appl
 ## Installation
 
 1. Get a build or build it yourself using `cargo build --release`
-2. On the working directory from which you start this relay, create an `.env` file with the following contents:
+2. On the working directory from which you start this relay, create the `config.yaml` file with the following contents:
 
-```env
-APNS_TOPIC="com.your_org.your_app"        # Your app's bundle ID
-APNS_AUTH_PRIVATE_KEY_FILE_PATH=./AuthKey_1234567890.p8	# Path to the private key file used to generate JWT tokens with the Apple APNS server. You can obtain this from https://developer.apple.com/account/resources/authkeys/list
-APNS_AUTH_PRIVATE_KEY_ID=1234567890     # The ID of the private key used to generate JWT tokens with the Apple APNS server. You can obtain this from https://developer.apple.com/account/resources/authkeys/list
-APNS_ENVIRONMENT="development"          # The environment to use with the APNS server. Can be "development" or "production"
-APPLE_TEAM_ID=1248163264                # The ID of the team. Can be found in AppStore Connect.
-GOOGLE_SERVICES_FILE_PATH="service-key.json" # Path to service account json (FCM)
-DB_PATH=./apns_notifications.db         # Path to the SQLite database file that will be used to store data about sent notifications, relative to the working directory
-RELAY_URL=wss://relay.damus.io          # URL to the relay server which will be consulted to get information such as mute lists.
-HOST="0.0.0.0"                          # The host to bind the server to (Defaults to 0.0.0.0 to bind to all interfaces)
-PORT=8000                               # The port to bind the server to. Defaults to 8000
-API_BASE_URL=http://localhost:8000      # Base URL from the API is allowed access (used by the server to perform NIP-98 authentication)
+```yaml
+# (Optional)
+# APNs config to send notifications
+apns:
+  # The path to the Apple private key .p8 file
+  key_path: my_key.p8
+  key_id: 1234567
+  team_id: 1248163264
+  environment: development
+  topic: com.your_org.your_app
+
+# (Optional)
+# FCM config to send notifications
+fcm:
+  google_services_file_path: "./google-services.json"
+  vaapi_key: my_vaapi_pubkey
+
+# (Optional)
+# Public URL of this service
+api_base_url: http://localhost:8000
+
+# (Optional)
+# Relay to pull profile data from (Mute lists)
+relay_url: wss://relay.damus.io
+
+# (Optional)
+# The max age of the Nostr event cache, in seconds
+nostr_event_cache_max_age: 600
+
+# (Optional)
+# Relays to pull events from
+pull_relays:
+  - "wss://relay.damus.io"
+  - "wss://relay.primal.net"
+  - "wss://nos.lol"
+  - "wss://relay.snort.social"
 ```
 
 6. Run this relay using the built binary or the `cargo run` command. If you want to change the log level, you can set the `RUST_LOG` environment variable to `DEBUG` or `INFO` before running the relay.
