@@ -7,7 +7,7 @@ use nostr_event_extensions::{ExtendedEvent, SqlStringConvertible};
 use std::cmp::{max, min};
 
 use a2::{Client, ClientConfig, DefaultNotificationBuilder, NotificationBuilder};
-use nostr_sdk::{Alphabet, Event, JsonUtil, Kind, PublicKey, SingleLetterTag, TagKind, Timestamp};
+use nostr_sdk::{Event, JsonUtil, Kind, PublicKey, TagKind, Timestamp};
 use rusqlite::params;
 use serde::Deserialize;
 use serde::Serialize;
@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use fcm_service::{FcmMessage, FcmNotification, FcmService, Target, WebpushConfig};
+use fcm_service::{FcmMessage, FcmNotification, FcmService, Target};
 use nostr_event_extensions::Codable;
 use nostr_event_extensions::MaybeConvertibleToMuteList;
 use nostr_event_extensions::TimestampedMuteList;
@@ -596,9 +596,7 @@ ALTER TABLE user_info drop column dm_notifications_enabled;",
                 .tags
                 .iter()
                 .find(|t| {
-                    t.kind() == TagKind::p()
-                        && t.as_slice().len() > 3
-                        && t.as_slice()[3] == "host"
+                    t.kind() == TagKind::p() && t.as_slice().len() > 3 && t.as_slice()[3] == "host"
                 })
                 .and_then(|t| PublicKey::from_hex(t.content()?).ok())
                 .unwrap_or(event.pubkey),
