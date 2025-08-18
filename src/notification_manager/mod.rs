@@ -80,6 +80,7 @@ pub enum NotificationManagerError {
     #[error("FCM is not configured")]
     FCMMissing,
 
+    #[allow(dead_code)] // remove later
     #[error(transparent)]
     Other(BoxSendError),
 }
@@ -352,7 +353,7 @@ impl NotificationManager {
         Self::add_column_if_not_exists(db, "user_info", "backend", "TINYINT", Some("0"))?;
 
         // Migration to kinds based preferences
-        if (Self::add_column_if_not_exists(db, "user_info", "kinds", "TEXT", None)?) {
+        if Self::add_column_if_not_exists(db, "user_info", "kinds", "TEXT", None)? {
             // migrate existing settings into kinds col
             db.execute_batch(
                 "
@@ -1065,21 +1066,21 @@ impl UserNotificationSettings {
     /// Merge kinds array will boolean flags
     pub fn merge_kinds(&self) -> Vec<Kind> {
         let mut ret: HashSet<Kind> = self.kinds.clone().into_iter().collect();
-        if (self.zap_notifications_enabled) {
+        if self.zap_notifications_enabled {
             ret.insert(Kind::ZapReceipt);
             ret.insert(Kind::ZapPrivateMessage);
         }
-        if (self.mention_notifications_enabled) {
+        if self.mention_notifications_enabled {
             ret.insert(Kind::TextNote);
         }
-        if (self.repost_notifications_enabled) {
+        if self.repost_notifications_enabled {
             ret.insert(Kind::Repost);
             ret.insert(Kind::GenericRepost);
         }
-        if (self.reaction_notifications_enabled) {
+        if self.reaction_notifications_enabled {
             ret.insert(Kind::Reaction);
         }
-        if (self.dm_notifications_enabled) {
+        if self.dm_notifications_enabled {
             ret.insert(Kind::EncryptedDirectMessage);
         }
         ret.into_iter().collect()

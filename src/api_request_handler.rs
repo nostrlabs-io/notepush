@@ -439,14 +439,6 @@ struct ParsedRequest {
 }
 
 impl ParsedRequest {
-    fn body_json(&self) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-        if let Some(body_bytes) = &self.body_bytes {
-            Ok(serde_json::from_slice(body_bytes)?)
-        } else {
-            Ok(json!({}))
-        }
-    }
-
     fn authenticate(&self) -> Result<Event, APIError> {
         let auth = self
             .auth_header

@@ -4,7 +4,7 @@ use super::EventSaver;
 use super::ExtendedEvent;
 use nostr_sdk::prelude::*;
 use tokio::sync::Mutex;
-use tokio::time::{timeout, Duration};
+use tokio::time::Duration;
 
 const NOTE_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 

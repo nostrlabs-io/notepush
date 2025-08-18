@@ -2,9 +2,7 @@
 
 use hyper_util::rt::TokioIo;
 use log::warn;
-use nostr_sdk::{
-    Client, Filter, RelayMessage, RelayPoolNotification, RelayStatus, SubscribeOptions, Timestamp,
-};
+use nostr_sdk::{Client, Filter, RelayPoolNotification, SubscribeOptions, Timestamp};
 use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,7 +17,6 @@ use config::NotePushConfig;
 
 mod api_request_handler;
 mod nip98_auth;
-mod utils;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

@@ -83,7 +83,7 @@ impl NotePushConfig {
     }
 
     pub fn port(&self) -> String {
-        self.host
+        self.port
             .as_ref()
             .map(|c| c.to_owned())
             .unwrap_or(DEFAULT_PORT.to_owned())

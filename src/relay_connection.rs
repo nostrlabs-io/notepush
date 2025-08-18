@@ -96,7 +96,7 @@ impl RelayConnection {
     async fn handle_client_message(
         &self,
         message: ClientMessage<'_>,
-    ) -> Result<RelayMessage, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<RelayMessage<'_>, Box<dyn std::error::Error + Send + Sync>> {
         match message {
             ClientMessage::Event(event) => {
                 self.notification_manager.handle_event(&event).await?;
